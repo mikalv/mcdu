@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ratatui = "0.28"
+ratatui = "0.29"
 crossterm = "0.28"
 walkdir = "2"
 rayon = "1.8"
