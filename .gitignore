@@ -1,1 +1,30 @@
-/target
+# Rust
+/target/
+Cargo.lock
+**/*.rs.bk
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local development
+.env
+.env.local
+*.log
+
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+
+# Test outputs
+test-output/
