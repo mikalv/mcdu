@@ -6,6 +6,7 @@ mod platform;
 mod modal;
 mod logger;
 mod changes;
+mod cache;
 
 use app::App;
 use crossterm::{
@@ -44,9 +45,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), Box<dyn Error>> {
     loop {
+        let viewport_height = terminal.size()?.height as usize;
+
         terminal.draw(|f| {
             ui::draw(f, &app);
         })?;
+
+        // Adjust scroll to keep selected item visible
+        app.adjust_scroll(viewport_height);
 
         if crossterm::event::poll(std::time::Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
@@ -55,6 +61,9 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), B
                 }
             }
         }
+
+        // Update scan progress if thread is running
+        app.update_scan_progress();
 
         // Update delete progress if thread is running
         app.update_delete_progress();
@@ -101,6 +110,7 @@ fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool, Box<dyn Error>> {
         KeyCode::Char('d') => app.open_delete_modal(),
         KeyCode::Char('?') => app.toggle_help(),
         KeyCode::Char('r') => app.refresh(),
+        KeyCode::Char('c') => app.hard_refresh(), // 'c' to clear cache and refresh
         _ => {}
     }
 

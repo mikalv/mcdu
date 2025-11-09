@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::fs;
 use walkdir::WalkDir;
+use crate::cache::SizeCache;
 
 #[derive(Clone, Debug)]
 pub struct DirEntry {
@@ -15,7 +16,7 @@ pub struct DirEntry {
     pub is_new: bool, // True if this didn't exist before
 }
 
-pub fn scan_directory(path: &PathBuf) -> Result<Vec<DirEntry>, Box<dyn std::error::Error>> {
+pub fn scan_directory(path: &PathBuf, cache: &SizeCache) -> Result<Vec<DirEntry>, Box<dyn std::error::Error>> {
     // Scan immediate children (non-recursive)
     let children: Vec<_> = fs::read_dir(path)?
         .filter_map(|e| e.ok())
@@ -35,9 +36,16 @@ pub fn scan_directory(path: &PathBuf) -> Result<Vec<DirEntry>, Box<dyn std::erro
                 .to_str()?
                 .to_string();
 
-            // Fast size calculation
+            // Fast size calculation - reuse metadata for files, use cache for dirs
             let size = if is_dir {
-                quick_dir_size(&path)
+                // Try cache first, fall back to scanning
+                if let Some(cached_size) = cache.get(&path) {
+                    cached_size
+                } else {
+                    let size = quick_dir_size(&path);
+                    cache.set(path.clone(), size);
+                    size
+                }
             } else {
                 metadata.len()
             };
@@ -62,13 +70,23 @@ pub fn scan_directory(path: &PathBuf) -> Result<Vec<DirEntry>, Box<dyn std::erro
 }
 
 fn quick_dir_size(path: &std::path::Path) -> u64 {
-    // Ultra-fast size calculation for UI responsiveness
-    // Only counts first 50000 files to keep latency low
-    WalkDir::new(path)
+    // Optimized size calculation with early termination for huge directories
+    // Uses DirEntry's metadata when available to avoid double stat calls
+    let mut total = 0u64;
+    const MAX_FILES: usize = 100_000; // Increased from 50k for better accuracy
+
+    for entry in WalkDir::new(path)
         .into_iter()
-        .take(50000) // Hard limit - prevents huge traversals from blocking UI
         .filter_map(|e| e.ok())
-        .filter_map(|e| e.metadata().ok())
-        .map(|m| m.len())
-        .sum()
+        .take(MAX_FILES)
+    {
+        // Get file size from metadata already loaded by WalkDir
+        if let Ok(metadata) = entry.metadata() {
+            if metadata.is_file() {
+                total += metadata.len();
+            }
+        }
+    }
+
+    total
 }

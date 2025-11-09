@@ -43,6 +43,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         draw_progress(f, progress);
     }
 
+    // Loading overlay if scanning
+    if app.is_scanning {
+        draw_loading(f);
+    }
+
     // Help screen if shown
     if app.show_help {
         draw_help(f);
@@ -55,7 +60,12 @@ fn draw_title(f: &mut Frame, app: &App, area: Rect) {
         app.current_path.display()
     );
 
-    let right_text = format!("  {} items ", app.entries.len());
+    let right_text = if app.is_scanning {
+        "  ⟳ Scanning... ".to_string()
+    } else {
+        let cache_size = app.size_cache.size();
+        format!("  {} items | {} cached ", app.entries.len(), cache_size)
+    };
 
     // Layout for title bar
     let chunks = Layout::default()
@@ -73,9 +83,15 @@ fn draw_title(f: &mut Frame, app: &App, area: Rect) {
         chunks[0],
     );
 
+    let right_style = if app.is_scanning {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
     f.render_widget(
         Paragraph::new(right_text)
-            .style(Style::default().fg(Color::Gray))
+            .style(right_style)
             .alignment(Alignment::Right),
         chunks[1],
     );
@@ -88,8 +104,13 @@ fn draw_browser(f: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from(format!("Path: {}", app.current_path.display())));
     lines.push(Line::from("".to_string()));
 
-    // Directory entries
-    for (idx, entry) in app.entries.iter().enumerate() {
+    // Calculate viewport bounds
+    let viewport_height = area.height.saturating_sub(4) as usize; // Subtract borders and header
+    let start_idx = app.scroll_offset;
+    let end_idx = (start_idx + viewport_height).min(app.entries.len());
+
+    // Directory entries - only render visible items
+    for (idx, entry) in app.entries.iter().enumerate().skip(start_idx).take(end_idx - start_idx) {
         let is_selected = idx == app.selected_index;
         let size_str = format_size(entry.size);
         let percent_bar = if entry.size > 0 {
@@ -205,7 +226,7 @@ fn draw_footer(f: &mut Frame, area: Rect) {
     );
 
     // Center: main actions
-    let main_text = "[d] Delete  [r] Refresh  [?] Help";
+    let main_text = "[d] Delete  [r] Refresh  [c] Clear cache  [?] Help";
     f.render_widget(
         Paragraph::new(main_text)
             .style(Style::default().fg(Color::Gray))
@@ -312,6 +333,34 @@ fn draw_progress(f: &mut Frame, progress: &crate::app::DeleteProgress) {
     f.render_widget(Paragraph::new(stats), inner_layout[2]);
 }
 
+fn draw_loading(f: &mut Frame) {
+    let centered = centered_rect(40, 20, f.area());
+
+    let loading_text = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("⟳ ", Style::default().fg(Color::Yellow)),
+            Span::styled("Scanning directory...", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Please wait", Style::default().fg(Color::Gray)),
+        ]),
+    ];
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        .style(Style::default().bg(Color::Black));
+
+    f.render_widget(
+        Paragraph::new(loading_text)
+            .block(block)
+            .alignment(Alignment::Center),
+        centered,
+    );
+}
+
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -402,7 +451,8 @@ pub fn draw_help(f: &mut Frame) {
         Line::from(vec![
             Span::styled("GENERAL", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         ]),
-        Line::from("  r                   Refresh current directory"),
+        Line::from("  r                   Refresh current directory (uses cache)"),
+        Line::from("  c                   Clear cache and hard refresh"),
         Line::from("  ?                   Show this help screen"),
         Line::from("  q / Esc             Quit application"),
         Line::from(""),
