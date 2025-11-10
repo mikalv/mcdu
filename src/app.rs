@@ -5,6 +5,7 @@ use crate::delete;
 use crate::logger;
 use crate::changes::{DirectoryFingerprint, get_fingerprint_path};
 use crate::cache::SizeCache;
+use crate::platform::{self, DiskSpace};
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
@@ -45,11 +46,20 @@ pub struct App {
     pub scan_thread: Option<JoinHandle<()>>,
     pub scan_rx: Option<mpsc::Receiver<ScanResult>>,
     pub is_scanning: bool,
+    pub scanning_name: Option<String>,
+    pub scan_progress: Option<(usize, usize)>, // (scanned, total)
     // Size cache for performance
     pub size_cache: SizeCache,
+    // Disk space info
+    pub disk_space: Option<DiskSpace>,
 }
 
 pub enum ScanResult {
+    Progress {
+        current_name: String,
+        scanned_count: usize,
+        total_count: usize,
+    },
     Success(Vec<DirEntry>),
     Error(String),
 }
@@ -74,6 +84,8 @@ pub enum DeleteProgressUpdate {
 impl App {
     pub fn new() -> Self {
         let root = PathBuf::from(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+        let disk_space = platform::get_disk_space(&root);
+
         let mut app = App {
             _root_path: root.clone(),
             current_path: root.clone(),
@@ -91,7 +103,10 @@ impl App {
             scan_thread: None,
             scan_rx: None,
             is_scanning: false,
+            scanning_name: None,
+            scan_progress: None,
             size_cache: SizeCache::new(),
+            disk_space,
         };
         app.refresh();
         app
@@ -135,6 +150,7 @@ impl App {
                 self.current_path = entry.path.clone();
                 self.selected_index = 0;
                 self.scroll_offset = 0;
+                self.disk_space = platform::get_disk_space(&self.current_path);
                 self.refresh();
             }
         }
@@ -146,6 +162,7 @@ impl App {
                 self.current_path = parent.to_path_buf();
                 self.selected_index = 0;
                 self.scroll_offset = 0;
+                self.disk_space = platform::get_disk_space(&self.current_path);
                 self.refresh();
             }
         }
@@ -163,12 +180,13 @@ impl App {
         let cache = self.size_cache.clone();
         let (tx, rx) = mpsc::channel();
 
+        let tx_clone = tx.clone();
         let handle = thread::spawn(move || {
-            let result = match scan::scan_directory(&path, &cache) {
+            let result = match scan::scan_directory(&path, &cache, Some(&tx_clone)) {
                 Ok(entries) => ScanResult::Success(entries),
                 Err(e) => ScanResult::Error(e.to_string()),
             };
-            let _ = tx.send(result);
+            let _ = tx_clone.send(result);
         });
 
         self.scan_thread = Some(handle);
@@ -186,62 +204,82 @@ impl App {
 
     pub fn update_scan_progress(&mut self) {
         if let Some(rx) = self.scan_rx.as_ref() {
-            if let Ok(result) = rx.try_recv() {
-                self.is_scanning = false;
-                self.scan_thread = None;
-                self.scan_rx = None;
+            // Drain all available messages
+            loop {
+                match rx.try_recv() {
+                    Ok(result) => {
+                        match result {
+                            ScanResult::Progress { current_name, scanned_count, total_count } => {
+                                // Update current scanning info
+                                self.scanning_name = Some(current_name);
+                                self.scan_progress = Some((scanned_count, total_count));
+                            }
+                            ScanResult::Success(mut entries) => {
+                                self.is_scanning = false;
+                                self.scan_thread = None;
+                                self.scan_rx = None;
+                                self.scanning_name = None;
+                                self.scan_progress = None;
 
-                match result {
-                    ScanResult::Success(mut entries) => {
-                        // Load previous fingerprint and detect changes
-                        let fp_path = get_fingerprint_path(&self.current_path);
+                                // Load previous fingerprint and detect changes
+                                let fp_path = get_fingerprint_path(&self.current_path);
 
-                        // Create fingerprint from scanned entries (without re-reading metadata)
-                        let new_fp = DirectoryFingerprint::from_entries(&entries);
+                                // Create fingerprint from scanned entries (without re-reading metadata)
+                                let new_fp = DirectoryFingerprint::from_entries(&entries);
 
-                        if let Ok(old_fp) = DirectoryFingerprint::load(&fp_path) {
-                            let changes = old_fp.get_changes(&new_fp);
+                                if let Ok(old_fp) = DirectoryFingerprint::load(&fp_path) {
+                                    let changes = old_fp.get_changes(&new_fp);
 
-                            // Apply changes to entries
-                            for entry in &mut entries {
-                                if let Some(change) = changes.iter().find(|c| c.name == entry.name) {
-                                    entry.size_change = Some((change.delta_bytes, change.delta_percent));
+                                    // Apply changes to entries
+                                    for entry in &mut entries {
+                                        if let Some(change) = changes.iter().find(|c| c.name == entry.name) {
+                                            entry.size_change = Some((change.delta_bytes, change.delta_percent));
+                                        }
+                                    }
                                 }
+
+                                // Save new fingerprint for next run
+                                let _ = std::fs::create_dir_all(fp_path.parent().unwrap());
+                                let _ = new_fp.save(&fp_path);
+
+                                // Don't show parent entry if we're at root
+                                if self.current_path.parent().map_or(false, |p| p != self.current_path) {
+                                    let parent_entry = DirEntry {
+                                        path: self.current_path.parent().unwrap().to_path_buf(),
+                                        name: "..".to_string(),
+                                        size: 0,
+                                        is_dir: true,
+                                        file_count: 0,
+                                        size_change: None,
+                                        is_new: false,
+                                    };
+                                    entries.insert(0, parent_entry);
+                                }
+                                self.entries = entries;
+                                self.selected_index = 0;
+                                self.scroll_offset = 0;
+                                // Clear any previous error
+                                if self.notification.as_ref().map_or(false, |n| n.contains("✗")) {
+                                    self.notification = None;
+                                }
+                                break; // Exit loop on success
+                            }
+                            ScanResult::Error(e) => {
+                                self.is_scanning = false;
+                                self.scan_thread = None;
+                                self.scan_rx = None;
+                                self.scanning_name = None;
+                                self.scan_progress = None;
+                                self.entries.clear();
+                                self.selected_index = 0;
+                                self.scroll_offset = 0;
+                                self.notification = Some(format!("✗ Error reading directory: {}", e));
+                                self.notification_time = Some(Instant::now());
+                                break; // Exit loop on error
                             }
                         }
-
-                        // Save new fingerprint for next run
-                        let _ = std::fs::create_dir_all(fp_path.parent().unwrap());
-                        let _ = new_fp.save(&fp_path);
-
-                        // Don't show parent entry if we're at root
-                        if self.current_path.parent().map_or(false, |p| p != self.current_path) {
-                            let parent_entry = DirEntry {
-                                path: self.current_path.parent().unwrap().to_path_buf(),
-                                name: "..".to_string(),
-                                size: 0,
-                                is_dir: true,
-                                file_count: 0,
-                                size_change: None,
-                                is_new: false,
-                            };
-                            entries.insert(0, parent_entry);
-                        }
-                        self.entries = entries;
-                        self.selected_index = 0;
-                        self.scroll_offset = 0;
-                        // Clear any previous error
-                        if self.notification.as_ref().map_or(false, |n| n.contains("✗")) {
-                            self.notification = None;
-                        }
                     }
-                    ScanResult::Error(e) => {
-                        self.entries.clear();
-                        self.selected_index = 0;
-                        self.scroll_offset = 0;
-                        self.notification = Some(format!("✗ Error reading directory: {}", e));
-                        self.notification_time = Some(Instant::now());
-                    }
+                    Err(_) => break, // No more messages
                 }
             }
         }
@@ -405,6 +443,8 @@ impl App {
                     self.notification_time = Some(Instant::now());
                     // Clear cache since directory sizes have changed
                     self.size_cache.clear();
+                    // Update disk space after deletion
+                    self.disk_space = platform::get_disk_space(&self.current_path);
                     self.refresh();
                 }
                 DeleteProgressUpdate::Error(e) => {

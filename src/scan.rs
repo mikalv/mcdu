@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::fs;
 use walkdir::WalkDir;
 use crate::cache::SizeCache;
+use std::sync::mpsc;
 
 #[derive(Clone, Debug)]
 pub struct DirEntry {
@@ -16,11 +17,18 @@ pub struct DirEntry {
     pub is_new: bool, // True if this didn't exist before
 }
 
-pub fn scan_directory(path: &PathBuf, cache: &SizeCache) -> Result<Vec<DirEntry>, Box<dyn std::error::Error>> {
+pub fn scan_directory(
+    path: &PathBuf,
+    cache: &SizeCache,
+    progress_tx: Option<&mpsc::Sender<crate::app::ScanResult>>,
+) -> Result<Vec<DirEntry>, Box<dyn std::error::Error>> {
     // Scan immediate children (non-recursive)
     let children: Vec<_> = fs::read_dir(path)?
         .filter_map(|e| e.ok())
         .collect();
+
+    let total_count = children.len();
+    let mut scanned_count = 0;
 
     // Process sequentially - directory size calculation is I/O bound and parallel doesn't help much
     // Plus we need to keep responsiveness
@@ -38,6 +46,15 @@ pub fn scan_directory(path: &PathBuf, cache: &SizeCache) -> Result<Vec<DirEntry>
 
             // Fast size calculation - reuse metadata for files, use cache for dirs
             let size = if is_dir {
+                // Send progress update for directories (skip files since they're fast)
+                if let Some(tx) = progress_tx {
+                    scanned_count += 1;
+                    let _ = tx.send(crate::app::ScanResult::Progress {
+                        current_name: name.clone(),
+                        scanned_count,
+                        total_count,
+                    });
+                }
                 // Try cache first, fall back to scanning
                 if let Some(cached_size) = cache.get(&path) {
                     cached_size

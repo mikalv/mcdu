@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph},
+    widgets::{Block, Borders, Gauge, Paragraph, Clear},
     Frame,
 };
 
@@ -45,7 +45,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     // Loading overlay if scanning
     if app.is_scanning {
-        draw_loading(f);
+        draw_loading(f, app.scanning_name.as_deref(), app.scan_progress);
     }
 
     // Help screen if shown
@@ -56,7 +56,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
 fn draw_title(f: &mut Frame, app: &App, area: Rect) {
     let title_text = format!(
-        " 📊 mcdu v0.1.0 | {} ",
+        " 📊 mcdu v0.2.0 | {} ",
         app.current_path.display()
     );
 
@@ -64,7 +64,17 @@ fn draw_title(f: &mut Frame, app: &App, area: Rect) {
         "  ⟳ Scanning... ".to_string()
     } else {
         let cache_size = app.size_cache.size();
-        format!("  {} items | {} cached ", app.entries.len(), cache_size)
+        let mut info = format!("  {} items | {} cached", app.entries.len(), cache_size);
+
+        // Add disk space if available
+        if let Some(ref disk) = app.disk_space {
+            let avail = format_size(disk.available_bytes);
+            let total = format_size(disk.total_bytes);
+            let percent_used = (disk.used_bytes as f64 / disk.total_bytes as f64 * 100.0) as u8;
+            info.push_str(&format!(" | 💾 {}/{} ({}%)", avail, total, percent_used));
+        }
+
+        format!("{} ", info)
     };
 
     // Layout for title bar
@@ -247,6 +257,9 @@ fn draw_footer(f: &mut Frame, area: Rect) {
 fn draw_modal(f: &mut Frame, modal: &Modal) {
     let centered = centered_rect(60, 30, f.area());
 
+    // Clear the background first to prevent text bleed-through
+    f.render_widget(Clear, centered);
+
     let title = modal.get_title();
     let message = modal.get_message();
 
@@ -285,6 +298,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal) {
     f.render_widget(
         Paragraph::new(content)
             .block(block)
+            .style(Style::default().bg(Color::Black))
             .alignment(Alignment::Center),
         centered,
     );
@@ -292,6 +306,10 @@ fn draw_modal(f: &mut Frame, modal: &Modal) {
 
 fn draw_progress(f: &mut Frame, progress: &crate::app::DeleteProgress) {
     let centered = centered_rect(70, 40, f.area());
+
+    // Clear the background first to prevent text bleed-through
+    f.render_widget(Clear, centered);
+
     let inner_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -304,7 +322,7 @@ fn draw_progress(f: &mut Frame, progress: &crate::app::DeleteProgress) {
     // Status
     f.render_widget(
         Paragraph::new(format!("🗑️  {}", progress.status))
-            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD).bg(Color::Black)),
         inner_layout[0],
     );
 
@@ -330,23 +348,70 @@ fn draw_progress(f: &mut Frame, progress: &crate::app::DeleteProgress) {
         format_size(progress.total_bytes),
         progress.deleted_files
     );
-    f.render_widget(Paragraph::new(stats), inner_layout[2]);
+    f.render_widget(
+        Paragraph::new(stats).style(Style::default().bg(Color::Black)),
+        inner_layout[2]
+    );
 }
 
-fn draw_loading(f: &mut Frame) {
-    let centered = centered_rect(40, 20, f.area());
+fn draw_loading(f: &mut Frame, scanning_name: Option<&str>, progress: Option<(usize, usize)>) {
+    let centered = centered_rect(70, 25, f.area());
 
-    let loading_text = vec![
+    // Clear the background first to prevent text bleed-through
+    f.render_widget(Clear, centered);
+
+    let mut loading_text = vec![
         Line::from(""),
         Line::from(vec![
             Span::styled("⟳ ", Style::default().fg(Color::Yellow)),
             Span::styled("Scanning directory...", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("Please wait", Style::default().fg(Color::Gray)),
-        ]),
     ];
+
+    // Show progress counter if available
+    if let Some((scanned, total)) = progress {
+        let percent = if total > 0 {
+            (scanned as f64 / total as f64 * 100.0) as usize
+        } else {
+            0
+        };
+        loading_text.push(Line::from(vec![
+            Span::styled(
+                format!("{} / {} items ({}%)", scanned, total, percent),
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            ),
+        ]));
+    } else {
+        loading_text.push(Line::from(vec![
+            Span::styled("Counting items...", Style::default().fg(Color::Gray)),
+        ]));
+    }
+
+    loading_text.push(Line::from(""));
+
+    // Show current name being scanned, truncated to fit
+    if let Some(name) = scanning_name {
+        let max_width = (f.area().width as usize).saturating_sub(10);
+        let truncated = if name.len() > max_width {
+            format!("...{}", &name[name.len().saturating_sub(max_width - 3)..])
+        } else {
+            name.to_string()
+        };
+
+        loading_text.push(Line::from(vec![
+            Span::styled(truncated, Style::default().fg(Color::Cyan)),
+        ]));
+    } else {
+        loading_text.push(Line::from(vec![
+            Span::styled("Initializing...", Style::default().fg(Color::Gray)),
+        ]));
+    }
+
+    loading_text.push(Line::from(""));
+    loading_text.push(Line::from(vec![
+        Span::styled("Please wait", Style::default().fg(Color::Gray)),
+    ]));
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -356,6 +421,7 @@ fn draw_loading(f: &mut Frame) {
     f.render_widget(
         Paragraph::new(loading_text)
             .block(block)
+            .style(Style::default().bg(Color::Black))
             .alignment(Alignment::Center),
         centered,
     );
@@ -412,15 +478,19 @@ fn create_bar(current: u64, max: u64) -> String {
 
 fn draw_notification(f: &mut Frame, notif: &str) {
     let centered = centered_rect(60, 10, f.area());
+
+    // Clear the background first to prevent text bleed-through
+    f.render_widget(Clear, centered);
+
     let notification_widget = Paragraph::new(notif)
         .block(Block::default().borders(Borders::ALL).title("Notification"))
         .alignment(Alignment::Center)
         .style(if notif.contains('✓') {
-            Style::default().fg(Color::Green)
+            Style::default().fg(Color::Green).bg(Color::Black)
         } else if notif.contains('✗') {
-            Style::default().fg(Color::Red)
+            Style::default().fg(Color::Red).bg(Color::Black)
         } else {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(Color::Cyan).bg(Color::Black)
         });
 
     f.render_widget(notification_widget, centered);
@@ -428,6 +498,9 @@ fn draw_notification(f: &mut Frame, notif: &str) {
 
 pub fn draw_help(f: &mut Frame) {
     let centered = centered_rect(80, 90, f.area());
+
+    // Clear the background first to prevent text bleed-through
+    f.render_widget(Clear, centered);
 
     let help_text = vec![
         Line::from(""),
@@ -483,9 +556,10 @@ pub fn draw_help(f: &mut Frame) {
 
     let help_widget = Paragraph::new(help_text)
         .block(Block::default()
-            .title(" 🎯 HELP - mcdu v0.1.0 ")
+            .title(" 🎯 HELP - mcdu v0.2.0 ")
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Cyan)))
+        .style(Style::default().bg(Color::Black))
         .alignment(Alignment::Left);
 
     f.render_widget(help_widget, centered);
