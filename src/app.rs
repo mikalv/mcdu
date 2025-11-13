@@ -83,7 +83,11 @@ pub enum DeleteProgressUpdate {
 
 impl App {
     pub fn new() -> Self {
-        let root = PathBuf::from(std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")));
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        Self::new_with_root(root)
+    }
+
+    pub fn new_with_root(root: PathBuf) -> Self {
         let disk_space = platform::get_disk_space(&root);
 
         let mut app = App {

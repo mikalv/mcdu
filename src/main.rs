@@ -17,8 +17,11 @@ use ratatui::prelude::*;
 use ratatui::Terminal;
 use std::error::Error;
 use std::io;
+use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let start_path = resolve_start_path()?;
+
     // Setup terminal
     enable_raw_mode()?;
     let stdout = io::stdout();
@@ -28,7 +31,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     terminal.hide_cursor()?;
 
     // Run app
-    let app = App::new();
+    let app = match start_path {
+        Some(path) => App::new_with_root(path),
+        None => App::new(),
+    };
     let result = run_app(&mut terminal, app);
 
     // Cleanup terminal - always restore state even on error
@@ -41,6 +47,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     Ok(())
+}
+
+fn resolve_start_path() -> Result<Option<PathBuf>, Box<dyn Error>> {
+    if let Some(arg) = std::env::args().nth(1) {
+        let path = PathBuf::from(arg);
+        if !path.exists() {
+            return Err(format!("Path does not exist: {}", path.display()).into());
+        }
+        if !path.is_dir() {
+            return Err(format!("Path is not a directory: {}", path.display()).into());
+        }
+        Ok(Some(path))
+    } else {
+        Ok(None)
+    }
 }
 
 fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), Box<dyn Error>> {
