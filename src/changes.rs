@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
 use std::io::Write;
+use std::path::{Path, PathBuf};
 
 /// Represents a snapshot of directory state using hashes instead of paths
 #[derive(Debug, Clone)]
@@ -19,6 +19,7 @@ pub struct SizeChange {
     #[allow(dead_code)]
     pub new_size: u64,
     pub delta_bytes: i64,
+    #[allow(dead_code)]
     pub delta_percent: f32,
 }
 

@@ -1,16 +1,16 @@
-use crate::modal::Modal;
-use crate::scan::DirEntry;
-use crate::scan;
+use crate::cache::SizeCache;
+use crate::changes::{get_fingerprint_path, DirectoryFingerprint, SizeChange};
 use crate::delete;
 use crate::logger;
-use crate::changes::{DirectoryFingerprint, get_fingerprint_path};
-use crate::cache::SizeCache;
+use crate::modal::Modal;
 use crate::platform::{self, DiskSpace};
+use crate::scan;
+use crate::scan::DirEntry;
+use chrono::Local;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::Instant;
-use chrono::Local;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppMode {
@@ -213,7 +213,11 @@ impl App {
                 match rx.try_recv() {
                     Ok(result) => {
                         match result {
-                            ScanResult::Progress { current_name, scanned_count, total_count } => {
+                            ScanResult::Progress {
+                                current_name,
+                                scanned_count,
+                                total_count,
+                            } => {
                                 // Update current scanning info
                                 self.scanning_name = Some(current_name);
                                 self.scan_progress = Some((scanned_count, total_count));
@@ -230,24 +234,25 @@ impl App {
 
                                 // Create fingerprint from scanned entries (without re-reading metadata)
                                 let new_fp = DirectoryFingerprint::from_entries(&entries);
-
                                 if let Ok(old_fp) = DirectoryFingerprint::load(&fp_path) {
                                     let changes = old_fp.get_changes(&new_fp);
 
-                                    // Apply changes to entries
-                                    for entry in &mut entries {
-                                        if let Some(change) = changes.iter().find(|c| c.name == entry.name) {
-                                            entry.size_change = Some((change.delta_bytes, change.delta_percent));
-                                        }
-                                    }
+                                    apply_size_changes(&mut entries, &changes);
                                 }
 
                                 // Save new fingerprint for next run
                                 let _ = std::fs::create_dir_all(fp_path.parent().unwrap());
                                 let _ = new_fp.save(&fp_path);
 
+                                // Always keep the list size-sorted for easier scanning
+                                entries.sort_by(|a, b| b.size.cmp(&a.size));
+
                                 // Don't show parent entry if we're at root
-                                if self.current_path.parent().map_or(false, |p| p != self.current_path) {
+                                if self
+                                    .current_path
+                                    .parent()
+                                    .map_or(false, |p| p != self.current_path)
+                                {
                                     let parent_entry = DirEntry {
                                         path: self.current_path.parent().unwrap().to_path_buf(),
                                         name: "..".to_string(),
@@ -263,7 +268,11 @@ impl App {
                                 self.selected_index = 0;
                                 self.scroll_offset = 0;
                                 // Clear any previous error
-                                if self.notification.as_ref().map_or(false, |n| n.contains("✗")) {
+                                if self
+                                    .notification
+                                    .as_ref()
+                                    .map_or(false, |n| n.contains("✗"))
+                                {
                                     self.notification = None;
                                 }
                                 break; // Exit loop on success
@@ -277,7 +286,8 @@ impl App {
                                 self.entries.clear();
                                 self.selected_index = 0;
                                 self.scroll_offset = 0;
-                                self.notification = Some(format!("✗ Error reading directory: {}", e));
+                                self.notification =
+                                    Some(format!("✗ Error reading directory: {}", e));
                                 self.notification_time = Some(Instant::now());
                                 break; // Exit loop on error
                             }
@@ -319,7 +329,11 @@ impl App {
                         status: "success".to_string(),
                         files_deleted: result.total_files,
                         duration_ms,
-                        errors: if result.errors.is_empty() { None } else { Some(result.errors) },
+                        errors: if result.errors.is_empty() {
+                            None
+                        } else {
+                            Some(result.errors)
+                        },
                     };
 
                     let _ = logger::write_log(&log);
@@ -372,7 +386,8 @@ impl App {
                 self.mode = AppMode::DryRun;
 
                 // Calculate total size
-                let total_size: u64 = files.iter()
+                let total_size: u64 = files
+                    .iter()
                     .filter_map(|p| std::fs::metadata(p).ok())
                     .map(|m| m.len())
                     .sum();
@@ -461,5 +476,79 @@ impl App {
                 }
             }
         }
+    }
+}
+
+fn apply_size_changes(entries: &mut [DirEntry], changes: &[SizeChange]) {
+    if entries.is_empty() || changes.is_empty() {
+        return;
+    }
+
+    let total_size: u64 = entries.iter().map(|entry| entry.size).sum();
+
+    for entry in entries {
+        if let Some(change) = changes.iter().find(|c| c.name == entry.name) {
+            let percent_of_directory = if total_size > 0 {
+                (change.delta_bytes as f64 / total_size as f64) * 100.0
+            } else {
+                0.0
+            };
+
+            entry.size_change = Some((change.delta_bytes, percent_of_directory as f32));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mock_entry(name: &str, size: u64) -> DirEntry {
+        DirEntry {
+            path: PathBuf::from(format!("/{}", name)),
+            name: name.to_string(),
+            size,
+            is_dir: true,
+            file_count: 0,
+            size_change: None,
+            is_new: false,
+        }
+    }
+
+    #[test]
+    fn size_change_percent_matches_directory_ratio() {
+        let mut entries = vec![mock_entry("a", 60), mock_entry("b", 40)];
+        let changes = vec![SizeChange {
+            name: "a".into(),
+            old_size: 30,
+            new_size: 90,
+            delta_bytes: 30,
+            delta_percent: 0.0,
+        }];
+
+        apply_size_changes(&mut entries, &changes);
+
+        let change = entries[0].size_change.expect("change");
+        assert_eq!(change.0, 30);
+        assert!((change.1 - 30.0).abs() < f32::EPSILON);
+        assert!(entries[1].size_change.is_none());
+    }
+
+    #[test]
+    fn zero_total_size_yields_zero_percent_change() {
+        let mut entries = vec![mock_entry("empty", 0)];
+        let changes = vec![SizeChange {
+            name: "empty".into(),
+            old_size: 0,
+            new_size: 100,
+            delta_bytes: 100,
+            delta_percent: 0.0,
+        }];
+
+        apply_size_changes(&mut entries, &changes);
+
+        let change = entries[0].size_change.expect("change");
+        assert_eq!(change.0, 100);
+        assert_eq!(change.1, 0.0);
     }
 }

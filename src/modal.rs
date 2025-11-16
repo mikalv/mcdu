@@ -58,18 +58,14 @@ impl Modal {
             ModalType::ConfirmDelete { path, size } => {
                 format!(
                     "Delete {} ({})? ",
-                    path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("?"),
+                    path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
                     format_size(*size)
                 )
             }
             ModalType::FinalConfirm { path, size } => {
                 format!(
                     "FINAL CONFIRMATION - Delete {} ({})? ",
-                    path.file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("?"),
+                    path.file_name().and_then(|n| n.to_str()).unwrap_or("?"),
                     format_size(*size)
                 )
             }

@@ -1,12 +1,12 @@
 mod app;
-mod ui;
-mod scan;
-mod delete;
-mod platform;
-mod modal;
-mod logger;
-mod changes;
 mod cache;
+mod changes;
+mod delete;
+mod logger;
+mod modal;
+mod platform;
+mod scan;
+mod ui;
 
 use app::App;
 use crossterm::{

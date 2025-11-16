@@ -1,5 +1,5 @@
-use std::path::PathBuf;
 use std::fs;
+use std::path::PathBuf;
 use walkdir::WalkDir;
 
 pub struct DeleteResult {
@@ -73,10 +73,7 @@ pub fn delete_directory(path: &PathBuf) -> Result<DeleteResult, Box<dyn std::err
 pub fn dry_run_delete(path: &PathBuf) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let mut files = Vec::new();
 
-    for entry in WalkDir::new(path)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in WalkDir::new(path).into_iter().filter_map(|e| e.ok()) {
         files.push(entry.path().to_path_buf());
     }
 

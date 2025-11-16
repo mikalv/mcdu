@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, Paragraph, Clear},
+    widgets::{Block, Borders, Clear, Gauge, Paragraph},
     Frame,
 };
 
@@ -55,10 +55,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 }
 
 fn draw_title(f: &mut Frame, app: &App, area: Rect) {
-    let title_text = format!(
-        " 📊 mcdu v0.2.0 | {} ",
-        app.current_path.display()
-    );
+    let title_text = format!(" 📊 mcdu v0.2.0 | {} ", app.current_path.display());
 
     let right_text = if app.is_scanning {
         "  ⟳ Scanning... ".to_string()
@@ -88,13 +85,19 @@ fn draw_title(f: &mut Frame, app: &App, area: Rect) {
 
     f.render_widget(
         Paragraph::new(title_text)
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+            .style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
             .alignment(Alignment::Left),
         chunks[0],
     );
 
     let right_style = if app.is_scanning {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::Gray)
     };
@@ -119,8 +122,21 @@ fn draw_browser(f: &mut Frame, app: &App, area: Rect) {
     let start_idx = app.scroll_offset;
     let end_idx = (start_idx + viewport_height).min(app.entries.len());
 
+    let total_size: u64 = app
+        .entries
+        .iter()
+        .filter(|entry| entry.name != "..")
+        .map(|entry| entry.size)
+        .sum();
+
     // Directory entries - only render visible items
-    for (idx, entry) in app.entries.iter().enumerate().skip(start_idx).take(end_idx - start_idx) {
+    for (idx, entry) in app
+        .entries
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(end_idx - start_idx)
+    {
         let is_selected = idx == app.selected_index;
         let size_str = format_size(entry.size);
         let percent_bar = if entry.size > 0 {
@@ -128,6 +144,12 @@ fn draw_browser(f: &mut Frame, app: &App, area: Rect) {
         } else {
             String::new()
         };
+        let percent_of_total = if total_size > 0 && entry.name != ".." {
+            (entry.size as f64 / total_size as f64) * 100.0
+        } else {
+            0.0
+        };
+        let percent_str = format!("{:>4.0}%", percent_of_total.round());
 
         let size_color = get_color_by_size(entry.size);
         let name_prefix = if entry.is_dir { "📁 " } else { "📄 " };
@@ -179,24 +201,27 @@ fn draw_browser(f: &mut Frame, app: &App, area: Rect) {
             (name_style, String::new())
         };
 
-        let size_style = Style::default()
-            .fg(size_color)
-            .add_modifier(Modifier::BOLD);
+        let size_style = Style::default().fg(size_color).add_modifier(Modifier::BOLD);
 
         let mut line_spans = vec![
             Span::styled(
-                format!("{}{:<25}", name_prefix, &entry.name[..entry.name.len().min(25)]),
+                format!(
+                    "{}{:<25}",
+                    name_prefix,
+                    &entry.name[..entry.name.len().min(25)]
+                ),
                 name_style,
             ),
             Span::styled(format!("{:>10}", size_str), size_style),
+            Span::styled(
+                format!("{:>6}", percent_str),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::raw(format!("  {} ", percent_bar)),
         ];
 
         if !change_indicator.is_empty() {
-            line_spans.push(Span::styled(
-                change_indicator,
-                name_style,
-            ));
+            line_spans.push(Span::styled(change_indicator, name_style));
         }
 
         if entry.file_count > 1 {
@@ -272,9 +297,7 @@ fn draw_modal(f: &mut Frame, modal: &Modal) {
                 .fg(Color::Black)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default()
-                .bg(Color::DarkGray)
-                .fg(Color::White)
+            Style::default().bg(Color::DarkGray).fg(Color::White)
         };
 
         button_spans.push(Span::styled(format!(" {} ", label), button_style));
@@ -321,8 +344,12 @@ fn draw_progress(f: &mut Frame, progress: &crate::app::DeleteProgress) {
 
     // Status
     f.render_widget(
-        Paragraph::new(format!("🗑️  {}", progress.status))
-            .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD).bg(Color::Black)),
+        Paragraph::new(format!("🗑️  {}", progress.status)).style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+                .bg(Color::Black),
+        ),
         inner_layout[0],
     );
 
@@ -350,7 +377,7 @@ fn draw_progress(f: &mut Frame, progress: &crate::app::DeleteProgress) {
     );
     f.render_widget(
         Paragraph::new(stats).style(Style::default().bg(Color::Black)),
-        inner_layout[2]
+        inner_layout[2],
     );
 }
 
@@ -364,7 +391,12 @@ fn draw_loading(f: &mut Frame, scanning_name: Option<&str>, progress: Option<(us
         Line::from(""),
         Line::from(vec![
             Span::styled("⟳ ", Style::default().fg(Color::Yellow)),
-            Span::styled("Scanning directory...", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "Scanning directory...",
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
         ]),
         Line::from(""),
     ];
@@ -376,16 +408,17 @@ fn draw_loading(f: &mut Frame, scanning_name: Option<&str>, progress: Option<(us
         } else {
             0
         };
-        loading_text.push(Line::from(vec![
-            Span::styled(
-                format!("{} / {} items ({}%)", scanned, total, percent),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            ),
-        ]));
+        loading_text.push(Line::from(vec![Span::styled(
+            format!("{} / {} items ({}%)", scanned, total, percent),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]));
     } else {
-        loading_text.push(Line::from(vec![
-            Span::styled("Counting items...", Style::default().fg(Color::Gray)),
-        ]));
+        loading_text.push(Line::from(vec![Span::styled(
+            "Counting items...",
+            Style::default().fg(Color::Gray),
+        )]));
     }
 
     loading_text.push(Line::from(""));
@@ -399,23 +432,30 @@ fn draw_loading(f: &mut Frame, scanning_name: Option<&str>, progress: Option<(us
             name.to_string()
         };
 
-        loading_text.push(Line::from(vec![
-            Span::styled(truncated, Style::default().fg(Color::Cyan)),
-        ]));
+        loading_text.push(Line::from(vec![Span::styled(
+            truncated,
+            Style::default().fg(Color::Cyan),
+        )]));
     } else {
-        loading_text.push(Line::from(vec![
-            Span::styled("Initializing...", Style::default().fg(Color::Gray)),
-        ]));
+        loading_text.push(Line::from(vec![Span::styled(
+            "Initializing...",
+            Style::default().fg(Color::Gray),
+        )]));
     }
 
     loading_text.push(Line::from(""));
-    loading_text.push(Line::from(vec![
-        Span::styled("Please wait", Style::default().fg(Color::Gray)),
-    ]));
+    loading_text.push(Line::from(vec![Span::styled(
+        "Please wait",
+        Style::default().fg(Color::Gray),
+    )]));
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        .border_style(
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
         .style(Style::default().bg(Color::Black));
 
     f.render_widget(
@@ -462,10 +502,10 @@ fn format_size(bytes: u64) -> String {
 
 fn get_color_by_size(size: u64) -> Color {
     match size {
-        s if s > 100_000_000_000 => Color::Red,      // >100GB
-        s if s > 10_000_000_000 => Color::Yellow,    // >10GB
-        s if s > 1_000_000_000 => Color::Cyan,       // >1GB
-        _ => Color::Green,                           // <1GB
+        s if s > 100_000_000_000 => Color::Red,   // >100GB
+        s if s > 10_000_000_000 => Color::Yellow, // >10GB
+        s if s > 1_000_000_000 => Color::Cyan,    // >1GB
+        _ => Color::Green,                        // <1GB
     }
 }
 
@@ -504,34 +544,44 @@ pub fn draw_help(f: &mut Frame) {
 
     let help_text = vec![
         Line::from(""),
-        Line::from(vec![
-            Span::styled("NAVIGATION", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "NAVIGATION",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from("  ↑ / k               Move cursor up"),
         Line::from("  ↓ / j               Move cursor down"),
         Line::from("  Enter / → / l       Enter directory"),
         Line::from("  Backspace / ← / h   Go to parent directory"),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("DELETION", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "DELETION",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )]),
         Line::from("  d                   Delete selected file/directory"),
         Line::from("  y / n / d           Quick confirm in modals (yes/no/dry-run)"),
         Line::from("  ← / →               Navigate modal buttons (arrow keys)"),
         Line::from("  Enter               Confirm selected button"),
         Line::from("  Esc                 Close modal or quit"),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("GENERAL", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "GENERAL",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from("  r                   Refresh current directory (uses cache)"),
         Line::from("  c                   Clear cache and hard refresh"),
         Line::from("  ?                   Show this help screen"),
         Line::from("  q / Esc             Quit application"),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("COLOR LEGEND", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "COLOR LEGEND",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )]),
         Line::from(vec![
             Span::styled("  ", Style::default().bg(Color::Red)),
             Span::raw("  Red: >100 GB"),
@@ -555,10 +605,12 @@ pub fn draw_help(f: &mut Frame) {
     ];
 
     let help_widget = Paragraph::new(help_text)
-        .block(Block::default()
-            .title(" 🎯 HELP - mcdu v0.2.0 ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan)))
+        .block(
+            Block::default()
+                .title(" 🎯 HELP - mcdu v0.2.0 ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
         .style(Style::default().bg(Color::Black))
         .alignment(Alignment::Left);
 

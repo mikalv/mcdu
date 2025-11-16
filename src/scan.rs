@@ -1,8 +1,8 @@
-use std::path::PathBuf;
-use std::fs;
-use walkdir::WalkDir;
 use crate::cache::SizeCache;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::mpsc;
+use walkdir::WalkDir;
 
 #[derive(Clone, Debug)]
 pub struct DirEntry {
@@ -12,7 +12,7 @@ pub struct DirEntry {
     pub is_dir: bool,
     #[allow(dead_code)]
     pub file_count: u64,
-    pub size_change: Option<(i64, f32)>, // (delta_bytes, delta_percent)
+    pub size_change: Option<(i64, f32)>, // (delta_bytes, percent_of_directory)
     #[allow(dead_code)]
     pub is_new: bool, // True if this didn't exist before
 }
@@ -23,9 +23,7 @@ pub fn scan_directory(
     progress_tx: Option<&mpsc::Sender<crate::app::ScanResult>>,
 ) -> Result<Vec<DirEntry>, Box<dyn std::error::Error>> {
     // Scan immediate children (non-recursive)
-    let children: Vec<_> = fs::read_dir(path)?
-        .filter_map(|e| e.ok())
-        .collect();
+    let children: Vec<_> = fs::read_dir(path)?.filter_map(|e| e.ok()).collect();
 
     let total_count = children.len();
     let mut scanned_count = 0;
@@ -39,10 +37,7 @@ pub fn scan_directory(
             let metadata = entry.metadata().ok()?;
             let is_dir = metadata.is_dir();
 
-            let name = path
-                .file_name()?
-                .to_str()?
-                .to_string();
+            let name = path.file_name()?.to_str()?.to_string();
 
             // Fast size calculation - reuse metadata for files, use cache for dirs
             let size = if is_dir {

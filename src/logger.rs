@@ -22,10 +22,7 @@ pub fn write_log(log: &DeleteLog) -> Result<(), Box<dyn std::error::Error>> {
     let log_dir = get_log_dir()?;
     fs::create_dir_all(&log_dir)?;
 
-    let filename = format!(
-        "delete-{}.log",
-        Local::now().format("%Y-%m-%d")
-    );
+    let filename = format!("delete-{}.log", Local::now().format("%Y-%m-%d"));
     let log_path = log_dir.join(filename);
 
     // Append to log file (one JSON per line)
