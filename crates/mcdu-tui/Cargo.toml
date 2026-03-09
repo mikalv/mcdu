@@ -23,7 +23,7 @@ serde_json.workspace = true
 dirs.workspace = true
 thiserror.workspace = true
 chrono = "0.4.43"
-tui-piechart = "0.2.8"
+tui-piechart = "0.3.1"
 tachyonfx = { workspace = true, optional = true }
 tui-big-text = { workspace = true, optional = true }
 
