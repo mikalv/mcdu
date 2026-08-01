@@ -1,14 +1,19 @@
 use clap::{Parser, Subcommand};
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEvent},
-    terminal::{disable_raw_mode, enable_raw_mode},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
+    execute,
+    terminal::{
+        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    },
 };
 use mcdu_tui::{app::App, app::AppMode, modal, ui};
 use ratatui::prelude::*;
 use ratatui::Terminal;
 use std::error::Error;
-use std::io;
+use std::io::{self, Write};
+use std::panic;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -38,6 +43,13 @@ pub struct CleanupCommand {
 #[derive(Parser)]
 pub struct OrphansCommand {}
 
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let mut stdout = io::stdout();
+    let _ = execute!(stdout, LeaveAlternateScreen);
+    let _ = stdout.flush();
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
@@ -55,25 +67,32 @@ fn main() -> Result<(), Box<dyn Error>> {
         std::process::exit(1);
     }
 
-    // Setup terminal
+    // Restore terminal on panic
+    let default_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        default_hook(info);
+    }));
+
+    // Setup terminal with alternate screen (preserves scrollback)
     enable_raw_mode()?;
-    let stdout = io::stdout();
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
     terminal.hide_cursor()?;
 
     // Run app
     let app = match (orphan_mode, &start_path, cleanup_mode) {
         #[cfg(target_os = "macos")]
         (true, _, _) => {
-            let mut a = App::new();
+            let mut a = App::new_cleanup_mode();
             let _ = a.start_orphan_scan();
             a
         }
         (_, _, true) => {
-            let mut a = App::new();
-            let _ = a.start_cleanup_scan_with_path(start_path);
+            let mut a = App::new_cleanup_mode();
+            let _ = a.start_cleanup_scan_with_path(start_path.clone());
             a
         }
         (_, Some(path), false) => App::new_with_root(path.clone()),
@@ -82,10 +101,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let result = run_app(&mut terminal, app);
 
-    // Cleanup terminal - always restore state even on error
+    // Cleanup terminal
     let _ = terminal.show_cursor();
-    let _ = terminal.clear();
-    disable_raw_mode()?;
+    restore_terminal();
 
     if let Err(e) = result {
         eprintln!("Error: {}", e);
@@ -112,76 +130,106 @@ fn run_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App) -> Result<(), B
 where
     B::Error: 'static,
 {
-    loop {
-        terminal.draw(|f| {
-            ui::draw(f, &mut app);
-        })?;
+    let mut needs_redraw = true;
+    let mut last_activity = Instant::now();
 
-        if crossterm::event::poll(std::time::Duration::from_millis(16))? {
+    loop {
+        if needs_redraw {
+            terminal.draw(|f| {
+                ui::draw(f, &mut app);
+            })?;
+            needs_redraw = false;
+        }
+
+        // Idle longer when quiet; poll faster while scanning/deleting
+        let busy = app.is_scanning
+            || app.cleanup_scanning
+            || app.delete_thread.is_some()
+            || app.cleanup_delete_thread.is_some()
+            || app.notification_time.is_some();
+        let poll_ms = if busy { 16 } else { 200 };
+
+        if crossterm::event::poll(Duration::from_millis(poll_ms))? {
             if let Event::Key(key) = event::read()? {
+                // Ignore key release/repeat (Windows + kitty keyboard protocol)
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
                 if handle_input(&mut app, key)? {
                     break;
                 }
+                needs_redraw = true;
+                last_activity = Instant::now();
             }
         }
 
-        // Update scan progress if thread is running
+        let before_scan = app.is_scanning;
+        let before_files = app.scan_files_count;
         app.update_scan_progress();
-
-        // Update delete progress if thread is running
         app.update_delete_progress();
-
-        // Update cleanup scan/delete progress
         app.update_cleanup_scan();
         app.update_cleanup_delete();
 
+        if app.is_scanning != before_scan || app.scan_files_count != before_files {
+            needs_redraw = true;
+        }
+        if app.delete_progress.is_some() || app.cleanup_delete_progress.is_some() {
+            needs_redraw = true;
+        }
+        if app.cleanup_scanning || app.cleanup_scan_progress.is_some() {
+            needs_redraw = true;
+        }
+
         // Clear notification after 3 seconds
         if let Some(notif_time) = app.notification_time {
-            if notif_time.elapsed().as_secs() > 3 {
+            if notif_time.elapsed() > Duration::from_secs(3) {
                 app.notification = None;
                 app.notification_time = None;
+                needs_redraw = true;
             }
         }
+
+        // Splash animation needs continuous redraw
+        #[cfg(feature = "splash")]
+        if app.splash_state.is_some() {
+            needs_redraw = true;
+        }
+
+        let _ = last_activity;
     }
 
     Ok(())
 }
 
 fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool, Box<dyn Error>> {
-    // If help is shown, any key closes it
-    if app.show_help {
-        app.show_help = false;
-        return Ok(false);
-    }
-
-    // If modal is open, handle modal input
     if app.modal.is_some() {
         return handle_modal_input(app, key);
     }
 
-    if matches!(app.mode, AppMode::Cleanup) {
-        return handle_cleanup_input(app, key);
+    match app.mode {
+        AppMode::Cleanup => handle_cleanup_input(app, key),
+        AppMode::Browsing | AppMode::DryRun => handle_browse_input(app, key),
+        AppMode::Deleting => Ok(false),
     }
+}
 
-    // Normal file browser input
+fn handle_browse_input(app: &mut App, key: KeyEvent) -> Result<bool, Box<dyn Error>> {
     match key.code {
-        KeyCode::Char('q') => return Ok(true), // 'q' to quit
+        KeyCode::Char('q') => return Ok(true),
+        // Esc no longer quits from browser (easy mispress) — require q
         KeyCode::Esc => {
-            // Esc key closes modals if open, otherwise quits
-            if app.modal.is_some() {
-                app.modal = None;
-            } else {
-                return Ok(true);
+            if app.show_help {
+                app.show_help = false;
             }
         }
+        KeyCode::Char('?') => app.toggle_help(),
         KeyCode::Up | KeyCode::Char('k') => app.select_previous(),
         KeyCode::Down | KeyCode::Char('j') => app.select_next(),
         KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => app.enter_directory(),
         KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => app.go_parent(),
         KeyCode::Char('d') => app.open_delete_modal(),
-        KeyCode::Char('?') => app.toggle_help(),
-        KeyCode::Char('r') => app.rescan_selected(), // Rescan selected directory
-        KeyCode::Char('R') | KeyCode::Char('c') => app.refresh(), // Rescan full tree
+        KeyCode::Char('r') => app.rescan_selected(),
+        KeyCode::Char('R') | KeyCode::Char('c') => app.refresh(),
         KeyCode::Char('C') => {
             let _ = app.start_cleanup_scan();
         }
@@ -195,32 +243,67 @@ fn handle_cleanup_input(app: &mut App, key: KeyEvent) -> Result<bool, Box<dyn Er
     use mcdu_tui::cleanup_ui::CleanupTab;
 
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => {
+        KeyCode::Char('q') => {
+            app.mode = AppMode::Browsing;
+        }
+        KeyCode::Esc => {
+            // Esc leaves cleanup back to browser, does not quit app
             app.mode = AppMode::Browsing;
         }
         KeyCode::Tab => {
-            app.cleanup_active_tab = match app.cleanup_active_tab {
-                CleanupTab::Overview => CleanupTab::Categories,
-                CleanupTab::Categories => CleanupTab::Files,
-                CleanupTab::Files => CleanupTab::Quarantine,
-                CleanupTab::Quarantine => CleanupTab::Overview,
-            };
+            app.next_cleanup_tab();
         }
         KeyCode::BackTab => {
-            app.cleanup_active_tab = match app.cleanup_active_tab {
-                CleanupTab::Overview => CleanupTab::Quarantine,
-                CleanupTab::Categories => CleanupTab::Overview,
-                CleanupTab::Files => CleanupTab::Categories,
-                CleanupTab::Quarantine => CleanupTab::Files,
-            };
+            app.prev_cleanup_tab();
         }
-        KeyCode::Char('1') => app.cleanup_active_tab = CleanupTab::Overview,
-        KeyCode::Char('2') => app.cleanup_active_tab = CleanupTab::Categories,
-        KeyCode::Char('3') => app.cleanup_active_tab = CleanupTab::Files,
-        KeyCode::Char('4') => app.cleanup_active_tab = CleanupTab::Quarantine,
-        KeyCode::Up | KeyCode::Char('k') => app.select_previous_cleanup(),
-        KeyCode::Down | KeyCode::Char('j') => app.select_next_cleanup(),
-        KeyCode::Char(' ') => app.toggle_cleanup_selection(),
+        KeyCode::Char('1') => app.set_cleanup_tab(CleanupTab::Overview),
+        KeyCode::Char('2') => app.set_cleanup_tab(CleanupTab::Categories),
+        KeyCode::Char('3') => app.set_cleanup_tab(CleanupTab::Files),
+        KeyCode::Char('4') => app.set_cleanup_tab(CleanupTab::Quarantine),
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.cleanup_active_tab == CleanupTab::Quarantine {
+                if app.cleanup_quarantine_selected > 0 {
+                    app.cleanup_quarantine_selected -= 1;
+                }
+            } else if app.cleanup_active_tab == CleanupTab::Files {
+                if app.cleanup_files_selected > 0 {
+                    app.cleanup_files_selected -= 1;
+                }
+            } else {
+                app.select_previous_cleanup();
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.cleanup_active_tab == CleanupTab::Quarantine {
+                let max = app.cleanup_quarantine_list.len().saturating_sub(1);
+                if app.cleanup_quarantine_selected < max {
+                    app.cleanup_quarantine_selected += 1;
+                }
+            } else if app.cleanup_active_tab == CleanupTab::Files {
+                let max = app.cleanup_candidates.len().saturating_sub(1);
+                if app.cleanup_files_selected < max {
+                    app.cleanup_files_selected += 1;
+                }
+            } else {
+                app.select_next_cleanup();
+            }
+        }
+        KeyCode::Char('s') if app.cleanup_active_tab == CleanupTab::Files => {
+            app.cycle_files_sort();
+        }
+        KeyCode::Char('r') if app.cleanup_active_tab == CleanupTab::Quarantine => {
+            app.restore_quarantine_selected();
+        }
+        KeyCode::Char('p') if app.cleanup_active_tab == CleanupTab::Quarantine => {
+            app.purge_quarantine_selected();
+        }
+        KeyCode::Char(' ') => {
+            if app.cleanup_active_tab == CleanupTab::Files {
+                app.toggle_files_selection();
+            } else {
+                app.toggle_cleanup_selection();
+            }
+        }
         KeyCode::Enter => app.toggle_cleanup_expand(),
         KeyCode::Char('a') => app.select_all_cleanup(),
         KeyCode::Char('n') => app.select_none_cleanup(),
@@ -265,16 +348,15 @@ fn handle_modal_input(app: &mut App, key: KeyEvent) -> Result<bool, Box<dyn Erro
             }
             KeyCode::Esc => {
                 app.modal = None;
+                app.cleanup_pending = None;
             }
-            KeyCode::Char('y')
-                if modal_ref.has_button("Yes") || modal_ref.has_button("YES, CLEANUP") =>
-            {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
                 return handle_modal_action(app, modal::ModalAction::Confirm);
             }
-            KeyCode::Char('n') if modal_ref.has_button("No") => {
+            KeyCode::Char('n') | KeyCode::Char('N') => {
                 return handle_modal_action(app, modal::ModalAction::Cancel);
             }
-            KeyCode::Char('d') if modal_ref.has_button("Dry-run") => {
+            KeyCode::Char('d') | KeyCode::Char('D') => {
                 return handle_modal_action(app, modal::ModalAction::DryRun);
             }
             _ => {}
@@ -290,11 +372,9 @@ fn handle_modal_action(app: &mut App, action: modal::ModalAction) -> Result<bool
             if let Some(modal_instance) = app.modal.take() {
                 match modal_instance.modal_type {
                     modal::ModalType::ConfirmDelete { path, size } => {
-                        // Move to final confirmation
                         app.modal = Some(modal::Modal::final_confirm(&path, size));
                     }
                     modal::ModalType::FinalConfirm { path, size: _ } => {
-                        // Start deletion
                         app.modal = None;
                         app.start_delete(&path)?;
                     }
@@ -305,10 +385,20 @@ fn handle_modal_action(app: &mut App, action: modal::ModalAction) -> Result<bool
                         }
                     }
                     modal::ModalType::CleanupFinal { .. } => {
-                        app.handle_cleanup_final_confirm(true);
+                        app.handle_cleanup_final_confirm_with_git(true, false);
                     }
                     #[allow(unreachable_patterns)]
                     _ => {}
+                }
+            }
+        }
+        modal::ModalAction::ConfirmWithGit => {
+            if let Some(modal_instance) = app.modal.take() {
+                if matches!(
+                    modal_instance.modal_type,
+                    modal::ModalType::CleanupFinal { .. }
+                ) {
+                    app.handle_cleanup_final_confirm_with_git(true, true);
                 }
             }
         }

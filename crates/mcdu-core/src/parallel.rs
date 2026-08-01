@@ -284,7 +284,9 @@ impl ParallelScanner {
                 is_active,
             )
             .with_directory(is_dir)
-            .with_warning(rule.warning.clone());
+            .with_warning(rule.warning.clone())
+            .with_risky(rule.risky)
+            .with_cleanup_command(rule.cleanup_command.clone());
 
             ctx.results.push(candidate);
 
@@ -439,7 +441,9 @@ impl ParallelScanner {
                     is_active,
                 )
                 .with_directory(is_dir)
-                .with_warning(rule.warning.clone());
+                .with_warning(rule.warning.clone())
+                .with_risky(rule.risky)
+                .with_cleanup_command(rule.cleanup_command.clone());
 
                 ctx.results.push(candidate);
                 ctx.matched_dirs

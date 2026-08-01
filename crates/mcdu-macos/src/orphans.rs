@@ -7,12 +7,13 @@ use std::path::Path;
 use std::sync::mpsc;
 use walkdir::WalkDir;
 
-/// Scan ~/Library for data belonging to uninstalled applications
+/// Scan ~/Library for data belonging to uninstalled applications.
+/// Returns empty vec if installed-app discovery fails (caller should surface the error).
 pub fn scan_orphans(
     home_dir: &Path,
     progress_tx: Option<&mpsc::Sender<ScanProgress>>,
-) -> Vec<Candidate> {
-    let installed = installed::get_installed_bundle_ids();
+) -> Result<Vec<Candidate>, String> {
+    let installed = installed::get_installed_bundle_ids().map_err(|e| e.0)?;
     let running = installed::get_running_bundle_ids();
 
     // Merge installed and running into a single "known" set
@@ -75,8 +76,10 @@ pub fn scan_orphans(
                 None => continue,
             };
 
-            // Skip system bundles
-            if bundle::is_system_bundle(&bundle_id) {
+            // Skip system / whitelisted bundles
+            if bundle::is_system_bundle(&bundle_id)
+                || installed::is_whitelisted_prefix(&bundle_id)
+            {
                 continue;
             }
 
@@ -135,7 +138,7 @@ pub fn scan_orphans(
 
     // Sort by size descending so the biggest orphans appear first
     results.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
-    results
+    Ok(results)
 }
 
 /// Calculate total size of a directory recursively
@@ -307,7 +310,9 @@ mod tests {
                     None => continue,
                 };
 
-                if bundle::is_system_bundle(&bundle_id) {
+                if bundle::is_system_bundle(&bundle_id)
+                    || installed::is_whitelisted_prefix(&bundle_id)
+                {
                     continue;
                 }
 

@@ -70,7 +70,14 @@ pub fn load_config(paths: &ConfigPaths) -> Result<CleanupConfig, ConfigError> {
         }
 
         if !user_config.rules.is_empty() {
-            config.rules.extend(user_config.rules);
+            // Merge by name: user rules override defaults
+            for user_rule in user_config.rules {
+                if let Some(existing) = config.rules.iter_mut().find(|r| r.name == user_rule.name) {
+                    *existing = user_rule;
+                } else {
+                    config.rules.push(user_rule);
+                }
+            }
         }
     }
 
@@ -100,10 +107,16 @@ pub fn save_state(paths: &ConfigPaths, state: &CleanupState) -> Result<(), Confi
     let serialized =
         toml::to_string_pretty(state).map_err(|e| ConfigError::ParseError(e.to_string()))?;
 
-    let mut file =
-        fs::File::create(&paths.state_file).map_err(|e| ConfigError::ReadError(e.to_string()))?;
-    file.write_all(serialized.as_bytes())
-        .map_err(|e| ConfigError::ReadError(e.to_string()))
+    let tmp_path = paths.state_file.with_extension("tmp");
+    {
+        let mut file =
+            fs::File::create(&tmp_path).map_err(|e| ConfigError::ReadError(e.to_string()))?;
+        file.write_all(serialized.as_bytes())
+            .map_err(|e| ConfigError::ReadError(e.to_string()))?;
+        file.sync_all()
+            .map_err(|e| ConfigError::ReadError(e.to_string()))?;
+    }
+    fs::rename(&tmp_path, &paths.state_file).map_err(|e| ConfigError::ReadError(e.to_string()))
 }
 
 #[allow(dead_code)]
@@ -177,6 +190,44 @@ risky = false
             .iter()
             .any(|rule| rule.name == "custom" && rule.category == "tests"));
         assert_eq!(config.scan_paths, vec!["~/custom".to_string()]);
+    }
+
+    #[test]
+    fn user_rule_overrides_default_by_name() {
+        let tmp = tempdir().unwrap();
+        let paths = platform_paths(&tmp);
+        let config_dir = paths.config_dir.join("mcdu");
+        fs::create_dir_all(&config_dir).unwrap();
+
+        // Pick a known default rule name if present; otherwise skip meaningful assert
+        let defaults: CleanupConfig = toml::from_str(DEFAULT_RULES).unwrap();
+        let Some(default_name) = defaults.rules.first().map(|r| r.name.clone()) else {
+            return;
+        };
+
+        let user_config = format!(
+            r#"
+[[rules]]
+name = "{default_name}"
+category = "overridden"
+path = "~/nowhere"
+pattern = "**/*"
+enabled = false
+risky = true
+"#
+        );
+        fs::write(config_dir.join("cleanup.toml"), user_config).unwrap();
+
+        let config_paths = default_config_paths(&paths);
+        let config = load_config(&config_paths).unwrap();
+        let matches: Vec<_> = config
+            .rules
+            .iter()
+            .filter(|r| r.name == default_name)
+            .collect();
+        assert_eq!(matches.len(), 1);
+        assert!(!matches[0].enabled);
+        assert_eq!(matches[0].category, "overridden");
     }
 
     #[test]

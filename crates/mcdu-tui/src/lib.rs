@@ -8,13 +8,10 @@
 //! - Cleanup view state
 
 pub mod app;
-pub mod cache;
-pub mod changes;
 pub mod cleanup_ui;
 pub mod delete;
 pub mod logger;
 pub mod modal;
-pub mod scan;
 #[cfg(feature = "splash")]
 pub mod splash;
 pub mod tree;

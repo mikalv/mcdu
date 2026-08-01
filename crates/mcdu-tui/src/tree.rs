@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use walkdir::WalkDir;
 
 #[cfg(unix)]
@@ -76,14 +78,22 @@ impl FileNode {
     }
 }
 
-/// Scan entire directory tree and build in-memory structure
+/// Scan entire directory tree and build in-memory structure.
+/// If `cancel` is set, returns an error early so the UI can start a new scan.
 pub fn scan_tree(
     root: &Path,
     progress_tx: Option<mpsc::Sender<ScanProgress>>,
 ) -> Result<FileNode, String> {
+    scan_tree_cancellable(root, progress_tx, None)
+}
+
+pub fn scan_tree_cancellable(
+    root: &Path,
+    progress_tx: Option<mpsc::Sender<ScanProgress>>,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<FileNode, String> {
     let root = root.canonicalize().map_err(|e| e.to_string())?;
 
-    // Collect all entries with WalkDir
     let mut entries: Vec<(PathBuf, u64, bool)> = Vec::new();
     let mut files_scanned = 0;
 
@@ -92,19 +102,25 @@ pub fn scan_tree(
         .into_iter()
         .filter_map(|e| e.ok())
     {
+        if cancel
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::Relaxed))
+        {
+            return Err("scan cancelled".to_string());
+        }
+
         let path = entry.path().to_path_buf();
 
         if let Ok(metadata) = entry.metadata() {
             let size = if metadata.is_file() {
                 disk_usage(&metadata)
             } else {
-                0 // Directory sizes calculated later
+                0
             };
 
             entries.push((path.clone(), size, metadata.is_dir()));
             files_scanned += 1;
 
-            // Send progress every 1000 files
             if files_scanned % 1000 == 0 {
                 if let Some(ref tx) = progress_tx {
                     let _ = tx.send(ScanProgress::Scanning {
@@ -116,9 +132,7 @@ pub fn scan_tree(
         }
     }
 
-    // Build tree from flat list
     let tree = build_tree(&root, entries);
-
     Ok(tree)
 }
 

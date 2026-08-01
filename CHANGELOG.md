@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`cleanup_command` on rules** — when set, cleanup runs the shell command (with `{path}` / `{dir}` templates) instead of quarantine/delete
+
+### Fixed
+- Browser single-file and symlink deletion (no more false success / half-deleted trees)
+- Cleanup empty selection no longer deletes everything
+- Cleanup deletes go through quarantine with incremental manifests; Quarantine tab restore/purge works
+- `git gc` is opt-in (`YES + git gc`), without `--prune=now`, errors reported
+- `risky` rules propagate to candidates and are not auto-selected
+- UTF-8-safe name/path truncation; panic hook + alternate screen; KeyEventKind::Press filter
+- `replace_subtree` size propagation and nav_stack remap after sort; cancellable scans; idle redraw
+- Files-tab selection/sort; Categories 2-line viewport scroll; cleanup without blocking tree splash
+- Scanner: file dedup across rules, scan_path∩base_path walk roots, `matches()` uses resolved base
+- Config: merge rules by name (user overrides defaults); atomic state writes
+- macOS orphans: abort when mdfind returns 0 apps; plutil/plist bundle-id reads; multi-suffix strip + whitelist
+- Esc no longer quits browser; help lists cleanup keys; bars scale to largest entry; data dir for logs
+
+### Removed
+- Unused TUI modules `cache.rs`, `scan.rs`, `changes.rs`
+
 ## [0.2.0] - 2025-01-10
 
 ### Added

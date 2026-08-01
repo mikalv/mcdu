@@ -107,6 +107,10 @@ pub struct Candidate {
     pub is_directory: bool,
     pub warning: Option<String>,
     pub default_selected: bool,
+    pub risky: bool,
+    /// If set, cleanup runs this shell command instead of deleting/quarantining.
+    /// Templates: `{path}` (absolute match path), `{dir}` (directory to run in).
+    pub cleanup_command: Option<String>,
 }
 
 impl Rule {
@@ -187,7 +191,7 @@ impl Rule {
             MatchType::Both => {} // Accept either
         }
 
-        let base_path = match self.base_path(platform_paths) {
+        let base_path = match self.resolve_base_path(platform_paths) {
             Some(path) => path,
             None => return false,
         };
@@ -215,8 +219,9 @@ impl Rule {
             return false;
         }
 
+        // min_size_bytes for files only here; directories are checked after recursive sizing
         if let Some(min_size) = self.min_size_bytes {
-            if metadata.len() < min_size {
+            if metadata.is_file() && metadata.len() < min_size {
                 return false;
             }
         }
@@ -261,6 +266,8 @@ impl Candidate {
             is_directory: false,
             warning: None,
             default_selected: true,
+            risky: false,
+            cleanup_command: None,
         }
     }
 
@@ -276,6 +283,20 @@ impl Candidate {
 
     pub fn with_default_selected(mut self, selected: bool) -> Self {
         self.default_selected = selected;
+        self
+    }
+
+    /// Mark candidate as risky; risky items are not selected by default.
+    pub fn with_risky(mut self, risky: bool) -> Self {
+        self.risky = risky;
+        if risky {
+            self.default_selected = false;
+        }
+        self
+    }
+
+    pub fn with_cleanup_command(mut self, cmd: Option<String>) -> Self {
+        self.cleanup_command = cmd;
         self
     }
 }

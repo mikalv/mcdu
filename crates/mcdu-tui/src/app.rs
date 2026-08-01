@@ -2,13 +2,15 @@ use crate::cleanup_ui::CleanupTab;
 use crate::delete;
 use crate::logger;
 use crate::modal::Modal;
-use crate::tree::{scan_tree, FileNode, ScanProgress};
+use crate::tree::{scan_tree_cancellable, FileNode, ScanProgress};
 use chrono::Local;
 use mcdu_core as cleanup;
 use mcdu_core::platform::{self, DiskSpace};
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -47,6 +49,7 @@ pub struct App {
     // Async scanning
     pub scan_thread: Option<JoinHandle<()>>,
     pub scan_rx: Option<mpsc::Receiver<ScanProgress>>,
+    pub scan_cancel: Option<Arc<AtomicBool>>,
     pub is_scanning: bool,
     pub scan_files_count: usize,
     pub scanning_path: Option<String>,
@@ -72,6 +75,8 @@ pub struct App {
     pub cleanup_files_sort_desc: bool,
     pub cleanup_files_scroll: usize,
     pub cleanup_files_selected: usize,
+    pub cleanup_quarantine_list: Vec<mcdu_core::QuarantineManifest>,
+    pub cleanup_quarantine_selected: usize,
     // Splash screen state (only with "splash" feature)
     #[cfg(feature = "splash")]
     pub splash_state: Option<crate::splash::SplashState>,
@@ -114,10 +119,31 @@ impl App {
     }
 
     pub fn new_with_root(root: PathBuf) -> Self {
+        let mut app = Self::create(root, true);
+        app.start_scan();
+        app.refresh_quarantine_list();
+        app
+    }
+
+    /// Cleanup/orphans entry: skip the browser tree scan and splash wait.
+    pub fn new_cleanup_mode() -> Self {
+        let root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+        let mut app = Self::create(root, false);
+        app.mode = AppMode::Cleanup;
+        #[cfg(feature = "splash")]
+        {
+            app.splash_state = None;
+        }
+        app.is_scanning = false;
+        app.refresh_quarantine_list();
+        app
+    }
+
+    fn create(root: PathBuf, with_splash: bool) -> Self {
         let disk_space = platform::get_disk_space(&root);
 
-        let mut app = App {
-            root_path: root.clone(),
+        App {
+            root_path: root,
             tree: None,
             nav_stack: Vec::new(),
             selected_index: 0,
@@ -133,6 +159,7 @@ impl App {
             show_help: false,
             scan_thread: None,
             scan_rx: None,
+            scan_cancel: None,
             is_scanning: false,
             scan_files_count: 0,
             scanning_path: None,
@@ -156,11 +183,15 @@ impl App {
             cleanup_files_sort_desc: true,
             cleanup_files_scroll: 0,
             cleanup_files_selected: 0,
+            cleanup_quarantine_list: Vec::new(),
+            cleanup_quarantine_selected: 0,
             #[cfg(feature = "splash")]
-            splash_state: Some(crate::splash::SplashState::new()),
-        };
-        app.start_scan();
-        app
+            splash_state: if with_splash {
+                Some(crate::splash::SplashState::new())
+            } else {
+                None
+            },
+        }
     }
 
     /// Get the current directory node we're viewing
@@ -294,38 +325,93 @@ impl App {
             return;
         };
 
-        // Navigate to the parent node
+        // Capture paths along nav_stack for remapping after sort
+        let mut path_stack: Vec<PathBuf> = Vec::new();
+        {
+            let mut node = &*tree;
+            for &idx in &nav_stack {
+                if idx >= node.children.len() {
+                    return;
+                }
+                path_stack.push(node.children[idx].path.clone());
+                node = &node.children[idx];
+            }
+            if child_idx >= node.children.len() {
+                return;
+            }
+        }
+
+        let replaced_path = {
+            let mut node = &*tree;
+            for &idx in &nav_stack {
+                node = &node.children[idx];
+            }
+            node.children[child_idx].path.clone()
+        };
+
+        // Navigate to the parent node and replace
         let mut node = tree;
         for &idx in &nav_stack {
             node = &mut node.children[idx];
         }
 
-        if child_idx >= node.children.len() {
-            return;
-        }
-
-        // Calculate size difference
         let old_size = node.children[child_idx].size;
         let new_size = new_tree.size;
         let size_diff = new_size as i64 - old_size as i64;
+        let new_path = new_tree.path.clone();
 
-        // Replace the subtree
         node.children[child_idx] = new_tree;
-
-        // Re-sort children by size
         node.children.sort_by(|a, b| b.size.cmp(&a.size));
 
-        // Update sizes up the tree
+        // Remap indices for the parent path after sort
+        fn remap_path_stack(tree: &FileNode, paths: &[PathBuf]) -> Option<Vec<usize>> {
+            let mut remapped = Vec::with_capacity(paths.len());
+            let mut cursor = tree;
+            for path in paths {
+                let idx = cursor.children.iter().position(|c| &c.path == path)?;
+                remapped.push(idx);
+                cursor = &cursor.children[idx];
+            }
+            Some(remapped)
+        }
+
+        let tree_ref = self.tree.as_ref().unwrap();
+        let remapped_parent = remap_path_stack(tree_ref, &path_stack).unwrap_or(nav_stack.clone());
+
+        // Update sizes: root first, then each ancestor including the parent (like remove_entry_from_tree)
         if size_diff != 0 {
             let tree = self.tree.as_mut().unwrap();
-            tree.size = (tree.size as i64 + size_diff) as u64;
+            tree.size = (tree.size as i64 + size_diff).max(0) as u64;
 
             let mut parent = tree;
-            for &idx in &nav_stack {
-                parent.size = (parent.size as i64 + size_diff) as u64;
+            for &idx in &remapped_parent {
+                if idx >= parent.children.len() {
+                    break;
+                }
                 parent = &mut parent.children[idx];
+                parent.size = (parent.size as i64 + size_diff).max(0) as u64;
             }
         }
+
+        // Remap live nav_stack paths that still exist
+        let live_paths: Vec<PathBuf> = {
+            let mut paths = Vec::new();
+            let mut node = self.tree.as_ref().unwrap();
+            for &idx in &self.nav_stack {
+                if idx >= node.children.len() {
+                    break;
+                }
+                paths.push(node.children[idx].path.clone());
+                node = &node.children[idx];
+            }
+            paths
+        };
+        if let Some(remapped) = remap_path_stack(self.tree.as_ref().unwrap(), &live_paths) {
+            self.nav_stack = remapped;
+        }
+
+        // Keep compiler quiet about unused (debugging hooks)
+        let _ = (replaced_path, new_path);
     }
 
     /// Remove a deleted entry from the tree and update sizes up the tree
@@ -369,24 +455,32 @@ impl App {
 
     /// Start full tree scan
     fn start_scan(&mut self) {
-        // Cancel any existing scan
-        if let Some(thread) = self.scan_thread.take() {
-            let _ = thread.join();
+        // Signal previous scan to stop; do not block the UI thread on join
+        if let Some(cancel) = self.scan_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
         }
+        self.scan_thread = None;
         self.scan_rx = None;
 
         let path = self.root_path.clone();
         let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
 
-        let handle = thread::spawn(move || match scan_tree(&path, Some(tx.clone())) {
-            Ok(tree) => {
-                let _ = tx.send(ScanProgress::Complete(tree));
-            }
-            Err(e) => {
-                let _ = tx.send(ScanProgress::Error(e));
+        let handle = thread::spawn(move || {
+            match scan_tree_cancellable(&path, Some(tx.clone()), Some(cancel_clone)) {
+                Ok(tree) => {
+                    let _ = tx.send(ScanProgress::Complete(tree));
+                }
+                Err(e) => {
+                    if e != "scan cancelled" {
+                        let _ = tx.send(ScanProgress::Error(e));
+                    }
+                }
             }
         });
 
+        self.scan_cancel = Some(cancel);
         self.scan_thread = Some(handle);
         self.scan_rx = Some(rx);
         self.is_scanning = true;
@@ -432,18 +526,28 @@ impl App {
         self.rescan_target = Some((self.nav_stack.clone(), child_idx));
 
         // Start scan of just this subtree
+        if let Some(cancel) = self.scan_cancel.take() {
+            cancel.store(true, Ordering::Relaxed);
+        }
         let path = entry.path.clone();
         let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel_clone = cancel.clone();
 
-        let handle = thread::spawn(move || match scan_tree(&path, Some(tx.clone())) {
-            Ok(tree) => {
-                let _ = tx.send(ScanProgress::Complete(tree));
-            }
-            Err(e) => {
-                let _ = tx.send(ScanProgress::Error(e));
+        let handle = thread::spawn(move || {
+            match scan_tree_cancellable(&path, Some(tx.clone()), Some(cancel_clone)) {
+                Ok(tree) => {
+                    let _ = tx.send(ScanProgress::Complete(tree));
+                }
+                Err(e) => {
+                    if e != "scan cancelled" {
+                        let _ = tx.send(ScanProgress::Error(e));
+                    }
+                }
             }
         });
 
+        self.scan_cancel = Some(cancel);
         self.scan_thread = Some(handle);
         self.scan_rx = Some(rx);
         self.is_scanning = true;
@@ -546,8 +650,12 @@ impl App {
             // Append orphaned app data on macOS
             #[cfg(target_os = "macos")]
             {
-                let orphans = mcdu_macos::scan_orphans(&platform_clone.home_dir, None);
-                results.extend(orphans);
+                match mcdu_macos::scan_orphans(&platform_clone.home_dir, None) {
+                    Ok(orphans) => results.extend(orphans),
+                    Err(_) => {
+                        // Discovery failure: skip orphans rather than flag everything
+                    }
+                }
             }
 
             results
@@ -571,7 +679,9 @@ impl App {
 
         let (tx, rx) = mpsc::channel();
         let home = platform_paths.home_dir.clone();
-        let handle = thread::spawn(move || mcdu_macos::scan_orphans(&home, Some(&tx)));
+        let handle = thread::spawn(move || {
+            mcdu_macos::scan_orphans(&home, Some(&tx)).unwrap_or_default()
+        });
 
         self.cleanup_scan_thread = Some(handle);
         self.cleanup_scan_rx = Some(rx);
@@ -701,6 +811,9 @@ impl App {
             CleanupTab::Files => CleanupTab::Quarantine,
             CleanupTab::Quarantine => CleanupTab::Overview,
         };
+        if matches!(self.cleanup_active_tab, CleanupTab::Quarantine) {
+            self.refresh_quarantine_list();
+        }
     }
 
     pub fn prev_cleanup_tab(&mut self) {
@@ -710,10 +823,139 @@ impl App {
             CleanupTab::Files => CleanupTab::Categories,
             CleanupTab::Quarantine => CleanupTab::Files,
         };
+        if matches!(self.cleanup_active_tab, CleanupTab::Quarantine) {
+            self.refresh_quarantine_list();
+        }
     }
 
     pub fn set_cleanup_tab(&mut self, tab: CleanupTab) {
         self.cleanup_active_tab = tab;
+        if matches!(tab, CleanupTab::Quarantine) {
+            self.refresh_quarantine_list();
+        }
+    }
+
+    pub fn refresh_quarantine_list(&mut self) {
+        let q = cleanup::default_quarantine();
+        self.cleanup_quarantine_list = q.list().unwrap_or_default();
+        if self.cleanup_quarantine_selected >= self.cleanup_quarantine_list.len()
+            && !self.cleanup_quarantine_list.is_empty()
+        {
+            self.cleanup_quarantine_selected = self.cleanup_quarantine_list.len() - 1;
+        }
+        if self.cleanup_quarantine_list.is_empty() {
+            self.cleanup_quarantine_selected = 0;
+        }
+    }
+
+    pub fn restore_quarantine_selected(&mut self) {
+        let Some(manifest) = self
+            .cleanup_quarantine_list
+            .get(self.cleanup_quarantine_selected)
+            .cloned()
+        else {
+            self.notification = Some("No quarantine batch selected".into());
+            self.notification_time = Some(Instant::now());
+            return;
+        };
+        let q = cleanup::default_quarantine();
+        match q.restore(&manifest.id) {
+            Ok(paths) => {
+                self.notification = Some(format!("Restored {} item(s)", paths.len()));
+                self.notification_time = Some(Instant::now());
+            }
+            Err(e) => {
+                self.notification = Some(format!("Restore failed: {e}"));
+                self.notification_time = Some(Instant::now());
+            }
+        }
+        self.refresh_quarantine_list();
+    }
+
+    pub fn purge_quarantine_selected(&mut self) {
+        let Some(manifest) = self
+            .cleanup_quarantine_list
+            .get(self.cleanup_quarantine_selected)
+            .cloned()
+        else {
+            self.notification = Some("No quarantine batch selected".into());
+            self.notification_time = Some(Instant::now());
+            return;
+        };
+        let q = cleanup::default_quarantine();
+        match q.purge(&manifest.id) {
+            Ok(bytes) => {
+                self.notification = Some(format!("Purged batch ({bytes} bytes)"));
+                self.notification_time = Some(Instant::now());
+            }
+            Err(e) => {
+                self.notification = Some(format!("Purge failed: {e}"));
+                self.notification_time = Some(Instant::now());
+            }
+        }
+        self.refresh_quarantine_list();
+    }
+
+    pub fn toggle_files_selection(&mut self) {
+        let mut paths: Vec<_> = self.cleanup_candidates.iter().map(|c| c.path.clone()).collect();
+        // Keep sorted view aligned with UI — use same order as draw_cleanup_files would
+        paths.sort();
+        // Prefer index into cleanup_candidates after applying current sort in UI;
+        // use sorted candidate list by size/name matching files tab.
+        let sorted = self.sorted_cleanup_candidates();
+        if let Some(c) = sorted.get(self.cleanup_files_selected) {
+            let path = c.path.clone();
+            if self.cleanup_selected.contains(&path) {
+                self.cleanup_selected.remove(&path);
+            } else {
+                self.cleanup_selected.insert(path);
+            }
+            self.apply_selection_and_save();
+        }
+    }
+
+    pub fn cycle_files_sort(&mut self) {
+        if self.cleanup_files_sort_desc
+            && matches!(
+                self.cleanup_files_sort,
+                crate::cleanup_ui::FilesSortColumn::Size
+            )
+        {
+            // First press on Size: flip direction; subsequent cycle column
+            self.cleanup_files_sort_desc = false;
+        } else {
+            self.cleanup_files_sort = self.cleanup_files_sort.next();
+            self.cleanup_files_sort_desc = true;
+        }
+        self.cleanup_files_selected = 0;
+        self.cleanup_files_scroll = 0;
+    }
+
+    fn sorted_cleanup_candidates(&self) -> Vec<&cleanup::rules::Candidate> {
+        let mut all: Vec<_> = self.cleanup_candidates.iter().collect();
+        match self.cleanup_files_sort {
+            crate::cleanup_ui::FilesSortColumn::Size => {
+                all.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+            }
+            crate::cleanup_ui::FilesSortColumn::Name => {
+                all.sort_by(|a, b| a.path.cmp(&b.path));
+            }
+            crate::cleanup_ui::FilesSortColumn::Category => {
+                all.sort_by(|a, b| a.rule_category.cmp(&b.rule_category));
+            }
+            crate::cleanup_ui::FilesSortColumn::Age => {
+                all.sort_by(|a, b| b.last_accessed.cmp(&a.last_accessed));
+            }
+        }
+        if !self.cleanup_files_sort_desc
+            && matches!(
+                self.cleanup_files_sort,
+                crate::cleanup_ui::FilesSortColumn::Size
+            )
+        {
+            all.reverse();
+        }
+        all
     }
 
     pub fn toggle_cleanup_selection(&mut self) {
@@ -801,34 +1043,53 @@ impl App {
         if let Some(handle) = self.cleanup_delete_thread.as_ref() {
             if handle.is_finished() {
                 let handle = self.cleanup_delete_thread.take().unwrap();
-                if let Ok(result) = handle.join() {
-                    self.cleanup_delete_progress = None;
-                    self.cleanup_delete_rx = None;
-                    if result.errors.is_empty() {
-                        self.notification = Some(format!(
-                            "Cleanup deleted files, freed {} bytes",
-                            result.freed_bytes
-                        ));
-                    } else {
-                        self.notification = Some(format!(
-                            "Cleanup completed with {} errors",
-                            result.errors.len()
-                        ));
+                match handle.join() {
+                    Ok(result) => {
+                        self.cleanup_delete_progress = None;
+                        self.cleanup_delete_rx = None;
+                        if result.errors.is_empty() {
+                            self.notification = Some(format!(
+                                "Cleanup deleted files, freed {} bytes",
+                                result.freed_bytes
+                            ));
+                        } else {
+                            let detail: Vec<String> = result
+                                .errors
+                                .iter()
+                                .take(3)
+                                .map(|(p, e)| format!("{}: {}", p.display(), e))
+                                .collect();
+                            self.notification = Some(format!(
+                                "Cleanup completed with {} errors: {}",
+                                result.errors.len(),
+                                detail.join("; ")
+                            ));
+                        }
+                        self.notification_time = Some(Instant::now());
+
+                        let deleted: HashSet<_> = result.deleted_paths.into_iter().collect();
+                        self.cleanup_candidates
+                            .retain(|c| !deleted.contains(&c.path));
+                        self.cleanup_selected.retain(|p| !deleted.contains(p));
+                        self.cleanup_categories =
+                            mcdu_core::group_by_category(self.cleanup_candidates.clone());
+                        self.refresh_quarantine_list();
+
+                        let max_idx = self.cleanup_rows().len().saturating_sub(1);
+                        if self.cleanup_selected_index > max_idx {
+                            self.cleanup_selected_index = max_idx;
+                        }
+
+                        self.mode = AppMode::Cleanup;
                     }
-                    self.notification_time = Some(Instant::now());
-
-                    self.cleanup_candidates
-                        .retain(|c| !self.cleanup_selected.contains(&c.path));
-                    self.cleanup_selected.clear();
-                    self.cleanup_categories =
-                        mcdu_core::group_by_category(self.cleanup_candidates.clone());
-
-                    let max_idx = self.cleanup_rows().len().saturating_sub(1);
-                    if self.cleanup_selected_index > max_idx {
-                        self.cleanup_selected_index = max_idx;
+                    Err(_) => {
+                        self.cleanup_delete_progress = None;
+                        self.cleanup_delete_rx = None;
+                        self.notification =
+                            Some("Cleanup delete thread panicked".to_string());
+                        self.notification_time = Some(Instant::now());
+                        self.mode = AppMode::Cleanup;
                     }
-
-                    self.mode = AppMode::Cleanup;
                 }
             }
         }
@@ -868,24 +1129,34 @@ impl App {
                 self.mode = AppMode::Cleanup;
             } else {
                 let total_size: u64 = pending.iter().map(|c| c.size_bytes).sum();
+                let has_risky = pending.iter().any(|c| c.risky);
                 self.cleanup_pending = Some((pending, false));
                 self.modal = Some(Modal::cleanup_final(
                     self.cleanup_pending.as_ref().unwrap().0.len(),
                     total_size,
+                    has_risky,
                 ));
             }
         }
     }
 
     pub fn handle_cleanup_final_confirm(&mut self, action: bool) {
+        self.handle_cleanup_final_confirm_with_git(action, false);
+    }
+
+    pub fn handle_cleanup_final_confirm_with_git(&mut self, action: bool, run_git: bool) {
         if !action {
             self.cleanup_pending = None;
             return;
         }
         if let Some((pending, _)) = self.cleanup_pending.take() {
-            let git_roots = self.cleanup_git_roots(&pending);
+            let git_roots = if run_git {
+                self.cleanup_git_roots(&pending)
+            } else {
+                Vec::new()
+            };
             let (tx, rx) = mpsc::channel();
-            let handle = cleanup::executor::execute_async(pending, true, git_roots, Some(tx));
+            let handle = cleanup::executor::execute_async(pending, run_git, git_roots, Some(tx));
             self.cleanup_delete_thread = Some(handle);
             self.cleanup_delete_rx = Some(rx);
             self.notification = Some("Starting cleanup delete...".to_string());
@@ -922,15 +1193,11 @@ impl App {
     }
 
     fn cleanup_selection(&self) -> Vec<cleanup::rules::Candidate> {
-        if self.cleanup_selected.is_empty() {
-            self.cleanup_candidates.clone()
-        } else {
-            self.cleanup_candidates
-                .iter()
-                .filter(|c| self.cleanup_selected.contains(&c.path))
-                .cloned()
-                .collect()
-        }
+        self.cleanup_candidates
+            .iter()
+            .filter(|c| self.cleanup_selected.contains(&c.path))
+            .cloned()
+            .collect()
     }
 
     pub fn start_delete(&mut self, path: &std::path::Path) -> Result<(), String> {
@@ -943,6 +1210,7 @@ impl App {
                 move || match delete::delete_directory(&path_clone, Some(tx.clone())) {
                     Ok(result) => {
                         let duration_ms = start_time.elapsed().as_millis() as u64;
+                        let success = result.errors.is_empty();
 
                         let log = logger::DeleteLog {
                             timestamp: Local::now().to_rfc3339(),
@@ -950,23 +1218,33 @@ impl App {
                             path: path_clone.display().to_string(),
                             size_bytes: result.total_bytes,
                             dry_run: false,
-                            status: "success".to_string(),
+                            status: if success {
+                                "success".to_string()
+                            } else {
+                                "error".to_string()
+                            },
                             files_deleted: result.total_files,
                             duration_ms,
                             errors: if result.errors.is_empty() {
                                 None
                             } else {
-                                Some(result.errors)
+                                Some(result.errors.clone())
                             },
                         };
 
                         let _ = logger::write_log(&log);
 
-                        let _ = tx.send(DeleteProgressUpdate::Complete {
-                            total_bytes: result.total_bytes,
-                            total_files: result.total_files,
-                        });
-                        Ok(())
+                        if success {
+                            let _ = tx.send(DeleteProgressUpdate::Complete {
+                                total_bytes: result.total_bytes,
+                                total_files: result.total_files,
+                            });
+                            Ok(())
+                        } else {
+                            let msg = result.errors.join("; ");
+                            let _ = tx.send(DeleteProgressUpdate::Error(msg.clone()));
+                            Err(msg)
+                        }
                     }
                     Err(e) => {
                         let log = logger::DeleteLog {
@@ -1092,6 +1370,7 @@ impl App {
                     self.delete_progress = None;
                     self.delete_rx = None;
                     self.mode = AppMode::Browsing;
+                    self.deleting_path = None; // Do not remove from tree on failure
                     let msg = format!("✗ Delete error: {}", e);
                     self.notification = Some(msg);
                     self.notification_time = Some(Instant::now());
@@ -1197,5 +1476,33 @@ risky = false
         app.block_on_cleanup_delete();
 
         assert!(!cache_file.exists());
+    }
+
+    #[test]
+    fn empty_cleanup_selection_does_not_delete_all() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let tmp = tempdir().unwrap();
+        let paths = setup_env(&tmp);
+        write_simple_config(&paths);
+
+        let cache_file = paths.cache_dir.join("file.tmp");
+        fs::create_dir_all(cache_file.parent().unwrap()).unwrap();
+        fs::write(&cache_file, "hello").unwrap();
+
+        let mut app = App::new();
+        app.start_cleanup_scan().unwrap();
+        app.block_on_cleanup_scan();
+        assert!(!app.cleanup_candidates.is_empty());
+        app.cleanup_selected.clear();
+
+        app.start_cleanup_delete();
+        assert!(app.modal.is_none());
+        assert!(
+            app.notification
+                .as_deref()
+                .unwrap_or("")
+                .contains("No cleanup items selected")
+        );
+        assert!(cache_file.exists());
     }
 }

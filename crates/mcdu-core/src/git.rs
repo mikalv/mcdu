@@ -38,14 +38,22 @@ pub fn find_git_repos(paths: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 pub fn run_git_gc(repo: &Path) -> std::io::Result<()> {
-    Command::new("git")
+    let status = Command::new("git")
         .arg("-C")
         .arg(repo)
         .arg("gc")
-        .arg("--prune=now")
         .arg("--quiet")
-        .status()
-        .map(|_| ())
+        .status()?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "git gc failed in {} with status {}",
+            repo.display(),
+            status
+        )))
+    }
 }
 
 fn is_git_dir(path: &Path) -> bool {

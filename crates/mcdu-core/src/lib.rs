@@ -21,6 +21,8 @@ pub use config::{CleanupConfig, CleanupState};
 pub use executor::{CleanupProgress, CleanupResult};
 pub use parallel::{parallel_scan, ParallelScanConfig, ParallelScanner};
 pub use platform::PlatformPaths;
-pub use quarantine::{Quarantine, QuarantineError, QuarantineManifest, QuarantineSettings};
+pub use quarantine::{
+    default_quarantine, Quarantine, QuarantineError, QuarantineManifest, QuarantineSettings,
+};
 pub use rules::{Candidate, MatchType, Rule};
 pub use scanner::{group_by_category, scan, CategoryGroup, ScanProgress};

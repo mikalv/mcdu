@@ -139,7 +139,24 @@ path = "${HOME}/myprojects"
 match_type = "directory"
 ```
 
-Rules from the config are merged with built-in defaults.
+To clean via a tool instead of deleting/quarantining the match:
+
+```toml
+[[rules]]
+name = "cargo-clean"
+category = "Rust"
+pattern = "**/target"
+path = "${HOME}/Repos"
+match_type = "directory"
+project_marker = "Cargo.toml"
+cleanup_command = "cargo clean --manifest-path '{dir}/Cargo.toml'"
+```
+
+Templates in `cleanup_command`: `{path}` (absolute match), `{dir}` (cwd — the directory itself, or its parent for files). Working directory is `{dir}`.
+
+Rules from the config are **merged by `name`** with built-in defaults (user wins — set `enabled = false` on a default rule name to disable it).
+
+> **Security:** Rules with `command = "..."` or `cleanup_command = "..."` run shell commands. Treat a shared/copied `cleanup.toml` as executable config.
 
 ## Architecture
 

@@ -37,6 +37,10 @@ pub fn write_log(log: &DeleteLog) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn get_log_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    // Prefer XDG/macOS data dir; fall back to ~/.mcdu/logs
+    if let Some(data) = dirs::data_dir() {
+        return Ok(data.join("mcdu").join("logs"));
+    }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     Ok(PathBuf::from(home).join(".mcdu").join("logs"))
 }

@@ -11,23 +11,25 @@ use ratatui::{
 use tui_piechart::{PieChart, PieSlice};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
-    // Splash screen takes over the entire frame when active
+    // Splash screen takes over only during browser tree scans
     #[cfg(feature = "splash")]
     {
-        if let Some(ref mut splash_state) = app.splash_state {
-            if app.is_scanning || !splash_state.is_done() {
-                let done = crate::splash::draw_splash(
-                    f,
-                    splash_state,
-                    app.scan_files_count,
-                    app.scanning_path.as_deref(),
-                );
-                if done {
+        if app.mode != AppMode::Cleanup {
+            if let Some(ref mut splash_state) = app.splash_state {
+                if app.is_scanning || !splash_state.is_done() {
+                    let done = crate::splash::draw_splash(
+                        f,
+                        splash_state,
+                        app.scan_files_count,
+                        app.scanning_path.as_deref(),
+                    );
+                    if done {
+                        app.splash_state = None;
+                    }
+                    return;
+                } else {
                     app.splash_state = None;
                 }
-                return;
-            } else {
-                app.splash_state = None;
             }
         }
     }
@@ -111,7 +113,11 @@ fn draw_title(f: &mut Frame, app: &App, area: Rect) {
         if let Some(ref disk) = app.disk_space {
             let avail = format_size(disk.available_bytes);
             let total = format_size(disk.total_bytes);
-            let percent_used = (disk.used_bytes as f64 / disk.total_bytes as f64 * 100.0) as u8;
+            let percent_used = if disk.total_bytes == 0 {
+                0
+            } else {
+                (disk.used_bytes as f64 / disk.total_bytes as f64 * 100.0) as u8
+            };
             info.push_str(&format!(" | 💾 {}/{} ({}%)", avail, total, percent_used));
         }
 
@@ -175,6 +181,14 @@ fn draw_browser(f: &mut Frame, app: &mut App, area: Rect) {
         .map(|entry| entry.size)
         .sum();
 
+    let max_size = entries
+        .iter()
+        .filter(|entry| entry.name != "..")
+        .map(|entry| entry.size)
+        .max()
+        .unwrap_or(1)
+        .max(1);
+
     // Directory entries - only render visible items
     for (idx, entry) in entries
         .iter()
@@ -184,8 +198,8 @@ fn draw_browser(f: &mut Frame, app: &mut App, area: Rect) {
     {
         let is_selected = idx == app.selected_index;
         let size_str = format_size(entry.size);
-        let percent_bar = if entry.size > 0 {
-            create_bar(entry.size, 100_000_000_000) // 100GB as max
+        let percent_bar = if entry.size > 0 && entry.name != ".." {
+            create_bar(entry.size, max_size)
         } else {
             String::new()
         };
@@ -212,11 +226,7 @@ fn draw_browser(f: &mut Frame, app: &mut App, area: Rect) {
 
         let line_spans = vec![
             Span::styled(
-                format!(
-                    "{}{:<25}",
-                    name_prefix,
-                    &entry.name[..entry.name.len().min(25)]
-                ),
+                format!("{}{:<25}", name_prefix, truncate_chars(&entry.name, 25)),
                 name_style,
             ),
             Span::styled(format!("{:>10}", size_str), size_style),
@@ -602,19 +612,11 @@ fn draw_cleanup_overview(f: &mut Frame, app: &App, area: Rect) {
 fn draw_cleanup_categories(f: &mut Frame, app: &App, area: Rect) {
     let rows = app.cleanup_rows();
     let mut lines = Vec::new();
-
     let viewport_height = area.height.saturating_sub(2) as usize;
-    let start_idx = app
-        .cleanup_selected_index
-        .saturating_sub(viewport_height / 2);
-    let end_idx = (start_idx + viewport_height).min(rows.len());
 
-    for (idx, row) in rows
-        .iter()
-        .enumerate()
-        .skip(start_idx)
-        .take(end_idx - start_idx)
-    {
+    // Build all display lines with their source row index for cursor tracking
+    let mut all_lines: Vec<(usize, Line)> = Vec::new();
+    for (idx, row) in rows.iter().enumerate() {
         let cursor = idx == app.cleanup_selected_index;
         match row {
             CleanupRow::Category { name } => {
@@ -654,7 +656,7 @@ fn draw_cleanup_categories(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     Style::default()
                 });
-                lines.push(line);
+                all_lines.push((idx, line));
             }
             CleanupRow::Candidate {
                 path,
@@ -678,13 +680,27 @@ fn draw_cleanup_categories(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     Style::default()
                 });
-                lines.push(line);
-                lines.push(Line::from(Span::styled(
-                    format!("      {} ({})", rule, pattern),
-                    Style::default().fg(Color::DarkGray),
-                )));
+                all_lines.push((idx, line));
+                all_lines.push((
+                    idx,
+                    Line::from(Span::styled(
+                        format!("      {} ({})", rule, pattern),
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                ));
             }
         }
+    }
+
+    // Scroll so the selected row's first line is visible (accounts for 2-line candidates)
+    let cursor_line = all_lines
+        .iter()
+        .position(|(idx, _)| *idx == app.cleanup_selected_index)
+        .unwrap_or(0);
+    let start_line = cursor_line.saturating_sub(viewport_height / 2);
+    let end_line = (start_line + viewport_height).min(all_lines.len());
+    for (_, line) in all_lines.into_iter().skip(start_line).take(end_line - start_line) {
+        lines.push(line);
     }
 
     let block = Block::default()
@@ -788,29 +804,55 @@ fn draw_cleanup_files(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn draw_cleanup_quarantine(f: &mut Frame, _app: &App, area: Rect) {
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "Quarantine",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from("No quarantined items."),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Items deleted with quarantine mode are moved here",
+fn draw_cleanup_quarantine(f: &mut Frame, app: &App, area: Rect) {
+    let mut lines = Vec::new();
+
+    if app.cleanup_quarantine_list.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "No quarantined items.",
             Style::default().fg(Color::Gray),
-        )),
-        Line::from(Span::styled(
-            "and can be restored within the retention period.",
-            Style::default().fg(Color::Gray),
-        )),
-    ];
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Cleanup deletes are moved here and can be restored (r) or purged (p).",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for (idx, manifest) in app.cleanup_quarantine_list.iter().enumerate() {
+            let selected = idx == app.cleanup_quarantine_selected;
+            let style = if selected {
+                Style::default()
+                    .bg(Color::DarkGray)
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let id_short: String = manifest.id.chars().take(8).collect();
+            let size_mb = manifest.total_size_bytes as f64 / 1_048_576.0;
+            lines.push(Line::from(Span::styled(
+                format!(
+                    " {}  {} item(s)  {:.1} MB  id:{}",
+                    if selected { ">" } else { " " },
+                    manifest.items.len(),
+                    size_mb,
+                    id_short
+                ),
+                style,
+            )));
+            if let Some(first) = manifest.items.first() {
+                lines.push(Line::from(Span::styled(
+                    format!("     {}", first.original_path.display()),
+                    Style::default().fg(Color::DarkGray),
+                )));
+            }
+        }
+    }
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("Quarantine (r: restore, p: purge, q: back)");
+        .title("Quarantine (j/k: select, r: restore, p: purge)");
 
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
@@ -882,6 +924,7 @@ fn draw_cleanup_progress(f: &mut Frame, progress: &mcdu_core::executor::CleanupP
     let stage_label = match progress.stage {
         mcdu_core::executor::CleanupStage::Files => "Files",
         mcdu_core::executor::CleanupStage::Git => "Git",
+        mcdu_core::executor::CleanupStage::Command => "Command",
     };
     f.render_widget(
         Paragraph::new(format!(
@@ -954,12 +997,8 @@ fn draw_loading(f: &mut Frame, files_scanned: usize, scanning_path: Option<&str>
 
     // Show current path being scanned
     if let Some(path) = scanning_path {
-        let max_width = (f.area().width as usize).saturating_sub(10);
-        let truncated = if path.len() > max_width {
-            format!("...{}", &path[path.len().saturating_sub(max_width - 3)..])
-        } else {
-            path.to_string()
-        };
+        let max_width = (f.area().width as usize).saturating_sub(10).max(4);
+        let truncated = truncate_path_end(path, max_width);
 
         loading_text.push(Line::from(vec![Span::styled(
             truncated,
@@ -1016,6 +1055,29 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(popup_layout[1])[1]
 }
 
+/// Truncate a string to at most `max_chars` Unicode scalar values (not bytes).
+pub fn truncate_chars(s: &str, max_chars: usize) -> String {
+    let count = s.chars().count();
+    if count <= max_chars {
+        return s.to_string();
+    }
+    s.chars().take(max_chars).collect()
+}
+
+/// Truncate from the start, keeping the end of a path (char-safe).
+fn truncate_path_end(path: &str, max_width: usize) -> String {
+    if max_width <= 3 {
+        return "...".chars().take(max_width).collect();
+    }
+    let char_count = path.chars().count();
+    if char_count <= max_width {
+        return path.to_string();
+    }
+    let keep = max_width - 3;
+    let skipped = char_count.saturating_sub(keep);
+    format!("...{}", path.chars().skip(skipped).collect::<String>())
+}
+
 fn format_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
     let mut size = bytes as f64;
@@ -1039,10 +1101,12 @@ fn get_color_by_size(size: u64) -> Color {
 }
 
 fn create_bar(current: u64, max: u64) -> String {
+    let max = max.max(1);
     let ratio = (current as f64 / max as f64).clamp(0.0, 1.0);
-    let filled = (ratio * 10.0) as usize;
+    let filled = (ratio * 10.0).round() as usize;
+    let filled = filled.min(10);
     let empty = 10 - filled;
-    format!("▓{}{}", "▓".repeat(filled), "░".repeat(empty))
+    format!("{}{}", "▓".repeat(filled), "░".repeat(empty))
 }
 
 fn draw_notification(f: &mut Frame, notif: &str) {
@@ -1090,7 +1154,21 @@ pub fn draw_help(f: &mut Frame) {
         Line::from("  y / n / d           Quick confirm in modals (yes/no/dry-run)"),
         Line::from("  ← / →               Navigate modal buttons (arrow keys)"),
         Line::from("  Enter               Confirm selected button"),
-        Line::from("  Esc                 Close modal or quit"),
+        Line::from("  Esc                 Close modal / leave cleanup (does not quit)"),
+        Line::from(""),
+        Line::from(vec![Span::styled(
+            "CLEANUP MODE",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::from("  C                   Enter cleanup scan"),
+        Line::from("  Tab / 1-4           Switch Overview/Categories/Files/Quarantine"),
+        Line::from("  Space               Toggle selection"),
+        Line::from("  a / n               Select all / none"),
+        Line::from("  d / D               Delete selected / dry-run"),
+        Line::from("  s                   Cycle Files-tab sort"),
+        Line::from("  r / p               Restore / purge quarantine batch"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "GENERAL",
@@ -1101,7 +1179,7 @@ pub fn draw_help(f: &mut Frame) {
         Line::from("  r                   Rescan selected directory"),
         Line::from("  R / c               Rescan entire tree"),
         Line::from("  ?                   Show this help screen"),
-        Line::from("  q / Esc             Quit application"),
+        Line::from("  q                   Quit application"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "COLOR LEGEND",

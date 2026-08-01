@@ -41,8 +41,8 @@ pub fn scan(
         .filter_map(|p| platform_paths.resolve_path(p))
         .collect();
 
-    // Track matched directories to avoid duplicate scanning
-    let mut matched_dirs: HashSet<PathBuf> = HashSet::new();
+    // Track matched paths (files and dirs) to avoid duplicates across rules
+    let mut matched_paths: HashSet<PathBuf> = HashSet::new();
 
     for rule in &config.rules {
         scan_rule(
@@ -54,7 +54,7 @@ pub fn scan(
             &mut total_size,
             &mut results,
             &scan_paths,
-            &mut matched_dirs,
+            &mut matched_paths,
         );
     }
 
@@ -64,6 +64,8 @@ pub fn scan(
 /// Calculate directory size recursively
 fn dir_size(path: &Path) -> u64 {
     WalkDir::new(path)
+        .same_file_system(true)
+        .follow_links(false)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter_map(|e| e.metadata().ok())
@@ -156,7 +158,7 @@ fn scan_rule(
     total_size: &mut u64,
     results: &mut Vec<Candidate>,
     scan_paths: &[PathBuf],
-    matched_dirs: &mut HashSet<PathBuf>,
+    matched_paths: &mut HashSet<PathBuf>,
 ) {
     // Send progress update for category
     if let Some(tx) = progress_tx {
@@ -180,7 +182,7 @@ fn scan_rule(
             total_size,
             results,
             scan_paths,
-            matched_dirs,
+            matched_paths,
         );
         return;
     }
@@ -191,29 +193,48 @@ fn scan_rule(
         None => return,
     };
 
-    if !scan_paths.is_empty()
-        && !scan_paths
-            .iter()
-            .any(|p| base_path.starts_with(p) || p.starts_with(&base_path))
-    {
+    // Restrict to intersection of base_path and requested scan_paths
+    let walk_roots = resolve_walk_roots(&base_path, scan_paths);
+    if walk_roots.is_empty() {
         return;
     }
 
-    if !base_path.exists() {
-        return;
+    for walk_root in walk_roots {
+        if !walk_root.exists() {
+            continue;
+        }
+        scan_path_with_rule(
+            rule,
+            &walk_root,
+            platform_paths,
+            progress_tx,
+            now,
+            found_count,
+            total_size,
+            results,
+            matched_paths,
+        );
     }
+}
 
-    scan_path_with_rule(
-        rule,
-        &base_path,
-        platform_paths,
-        progress_tx,
-        now,
-        found_count,
-        total_size,
-        results,
-        matched_dirs,
-    );
+/// Compute walk roots as the intersection of a rule base_path and scan_paths.
+fn resolve_walk_roots(base_path: &Path, scan_paths: &[PathBuf]) -> Vec<PathBuf> {
+    if scan_paths.is_empty() {
+        return vec![base_path.to_path_buf()];
+    }
+    let mut roots = Vec::new();
+    for sp in scan_paths {
+        if sp.starts_with(base_path) {
+            // scan path is inside rule base → walk only the scan path
+            roots.push(sp.clone());
+        } else if base_path.starts_with(sp) {
+            // rule base is inside scan path → walk the (narrower) rule base
+            roots.push(base_path.to_path_buf());
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    roots
 }
 
 /// Scan for artifacts in project directories identified by marker files
@@ -228,7 +249,7 @@ fn scan_project_marker_rule(
     total_size: &mut u64,
     results: &mut Vec<Candidate>,
     scan_paths: &[PathBuf],
-    matched_dirs: &mut HashSet<PathBuf>,
+    matched_paths: &mut HashSet<PathBuf>,
 ) {
     let max_depth = rule.max_depth.unwrap_or(6) as usize;
     let project_roots = find_project_roots(scan_paths, marker, max_depth);
@@ -244,7 +265,7 @@ fn scan_project_marker_rule(
         let artifact_path = project_root.join(&artifact_name);
 
         // Skip if already matched
-        if matched_dirs.contains(&artifact_path) {
+        if matched_paths.contains(&artifact_path) {
             continue;
         }
 
@@ -318,10 +339,12 @@ fn scan_project_marker_rule(
             is_active,
         )
         .with_directory(is_dir)
-        .with_warning(rule.warning.clone());
+        .with_warning(rule.warning.clone())
+        .with_risky(rule.risky)
+        .with_cleanup_command(rule.cleanup_command.clone());
 
         results.push(candidate);
-        matched_dirs.insert(artifact_path.clone());
+        matched_paths.insert(artifact_path.clone());
 
         *found_count += 1;
         *total_size += size;
@@ -348,7 +371,7 @@ fn scan_path_with_rule(
     found_count: &mut u64,
     total_size: &mut u64,
     results: &mut Vec<Candidate>,
-    matched_dirs: &mut HashSet<PathBuf>,
+    matched_paths: &mut HashSet<PathBuf>,
 ) {
     // Build walker with max_depth if specified
     let walker = {
@@ -363,7 +386,7 @@ fn scan_path_with_rule(
         let path = entry.path();
 
         // Skip if inside an already-matched directory
-        if matched_dirs
+        if matched_paths
             .iter()
             .any(|d| path.starts_with(d) && path != d)
         {
@@ -408,7 +431,7 @@ fn scan_path_with_rule(
 
         // Skip if already matched
         let path_buf = path.to_path_buf();
-        if matched_dirs.contains(&path_buf) {
+        if matched_paths.contains(&path_buf) {
             continue;
         }
 
@@ -437,14 +460,14 @@ fn scan_path_with_rule(
             is_active,
         )
         .with_directory(is_dir)
-        .with_warning(rule.warning.clone());
+        .with_warning(rule.warning.clone())
+        .with_risky(rule.risky)
+        .with_cleanup_command(rule.cleanup_command.clone());
 
         results.push(candidate);
 
-        // Track matched directories to avoid duplicates
-        if is_dir {
-            matched_dirs.insert(path_buf.clone());
-        }
+        // Track all matched paths (files and dirs) to avoid duplicates across rules
+        matched_paths.insert(path_buf.clone());
 
         *found_count += 1;
         *total_size += size;

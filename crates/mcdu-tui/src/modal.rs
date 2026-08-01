@@ -18,12 +18,14 @@ pub enum ModalType {
     CleanupFinal {
         items: usize,
         size: u64,
+        has_risky: bool,
     },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ModalAction {
     Confirm,
+    ConfirmWithGit,
     DryRun,
     Cancel,
 }
@@ -79,12 +81,17 @@ impl Modal {
         }
     }
 
-    pub fn cleanup_final(items: usize, size: u64) -> Self {
+    pub fn cleanup_final(items: usize, size: u64, has_risky: bool) -> Self {
         Modal {
-            modal_type: ModalType::CleanupFinal { items, size },
-            selected_button: 1,
+            modal_type: ModalType::CleanupFinal {
+                items,
+                size,
+                has_risky,
+            },
+            selected_button: 2, // Default to Cancel for safety
             buttons: vec![
                 ("YES, CLEANUP".to_string(), ModalAction::Confirm),
+                ("YES + git gc".to_string(), ModalAction::ConfirmWithGit),
                 ("Cancel".to_string(), ModalAction::Cancel),
             ],
         }
@@ -126,7 +133,11 @@ impl Modal {
                     format_size(*size)
                 )
             }
-            ModalType::CleanupFinal { items, size } => {
+            ModalType::CleanupFinal {
+                items,
+                size,
+                has_risky: _,
+            } => {
                 format!(
                     "FINAL CONFIRMATION - Cleanup {} items ({})? ",
                     items,
@@ -149,7 +160,15 @@ impl Modal {
                     "Proceed to final confirmation.".to_string()
                 }
             }
-            ModalType::CleanupFinal { .. } => "Really delete selected cleanup items?".to_string(),
+            ModalType::CleanupFinal { has_risky, .. } => {
+                if *has_risky {
+                    "Selection includes RISKY items. git gc is opt-in (YES + git gc)."
+                        .to_string()
+                } else {
+                    "Really delete selected cleanup items? git gc is opt-in (YES + git gc)."
+                        .to_string()
+                }
+            }
         }
     }
 }
