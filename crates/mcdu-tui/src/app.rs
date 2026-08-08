@@ -7,7 +7,7 @@ use chrono::Local;
 use mcdu_core as cleanup;
 use mcdu_core::platform::{self, DiskSpace};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -53,7 +53,8 @@ pub struct App {
     pub is_scanning: bool,
     pub scan_files_count: usize,
     pub scanning_path: Option<String>,
-    pub rescan_target: Option<(Vec<usize>, usize)>, // (nav_stack, child_index) for subtree rescan
+    /// When set, incremental scan events apply to this subtree (path-based).
+    pub rescan_target: Option<PathBuf>,
     // Disk space info
     pub disk_space: Option<DiskSpace>,
     // Cleanup feature
@@ -104,6 +105,7 @@ pub struct DisplayEntry {
     pub path: PathBuf,
     pub size: u64,
     pub is_dir: bool,
+    pub complete: bool,
 }
 
 impl Default for App {
@@ -217,6 +219,7 @@ impl App {
                 path: PathBuf::new(),
                 size: 0,
                 is_dir: true,
+                complete: true,
             });
         }
 
@@ -227,6 +230,7 @@ impl App {
                     path: child.path.clone(),
                     size: child.size,
                     is_dir: child.is_dir,
+                    complete: child.complete,
                 });
             }
         }
@@ -284,7 +288,7 @@ impl App {
     }
 
     pub fn enter_directory(&mut self) {
-        if self.tree.is_none() || self.is_scanning {
+        if self.tree.is_none() {
             return;
         }
 
@@ -319,99 +323,129 @@ impl App {
         }
     }
 
-    /// Replace a subtree with a newly scanned one and update sizes
-    fn replace_subtree(&mut self, nav_stack: Vec<usize>, child_idx: usize, new_tree: FileNode) {
-        let Some(tree) = self.tree.as_mut() else {
+    fn nav_path_stack(&self) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        let Some(tree) = self.tree.as_ref() else {
+            return paths;
+        };
+        let mut node = tree;
+        for &idx in &self.nav_stack {
+            if idx >= node.children.len() {
+                break;
+            }
+            paths.push(node.children[idx].path.clone());
+            node = &node.children[idx];
+        }
+        paths
+    }
+
+    fn selected_entry_path(&self) -> Option<PathBuf> {
+        let entries = self.get_display_entries();
+        entries.get(self.selected_index).and_then(|e| {
+            if e.name == ".." {
+                None
+            } else {
+                Some(e.path.clone())
+            }
+        })
+    }
+
+    fn remap_navigation(&mut self, nav_paths: &[PathBuf], selected: Option<PathBuf>) {
+        let Some(tree) = self.tree.as_ref() else {
             return;
         };
 
-        // Capture paths along nav_stack for remapping after sort
-        let mut path_stack: Vec<PathBuf> = Vec::new();
-        {
-            let mut node = &*tree;
-            for &idx in &nav_stack {
-                if idx >= node.children.len() {
-                    return;
-                }
-                path_stack.push(node.children[idx].path.clone());
-                node = &node.children[idx];
-            }
-            if child_idx >= node.children.len() {
-                return;
-            }
-        }
-
-        let replaced_path = {
-            let mut node = &*tree;
-            for &idx in &nav_stack {
-                node = &node.children[idx];
-            }
-            node.children[child_idx].path.clone()
-        };
-
-        // Navigate to the parent node and replace
-        let mut node = tree;
-        for &idx in &nav_stack {
-            node = &mut node.children[idx];
-        }
-
-        let old_size = node.children[child_idx].size;
-        let new_size = new_tree.size;
-        let size_diff = new_size as i64 - old_size as i64;
-        let new_path = new_tree.path.clone();
-
-        node.children[child_idx] = new_tree;
-        node.children.sort_by(|a, b| b.size.cmp(&a.size));
-
-        // Remap indices for the parent path after sort
-        fn remap_path_stack(tree: &FileNode, paths: &[PathBuf]) -> Option<Vec<usize>> {
-            let mut remapped = Vec::with_capacity(paths.len());
-            let mut cursor = tree;
-            for path in paths {
-                let idx = cursor.children.iter().position(|c| &c.path == path)?;
+        let mut remapped = Vec::new();
+        let mut cursor = tree;
+        for path in nav_paths {
+            if let Some(idx) = cursor.children.iter().position(|c| &c.path == path) {
                 remapped.push(idx);
                 cursor = &cursor.children[idx];
-            }
-            Some(remapped)
-        }
-
-        let tree_ref = self.tree.as_ref().unwrap();
-        let remapped_parent = remap_path_stack(tree_ref, &path_stack).unwrap_or(nav_stack.clone());
-
-        // Update sizes: root first, then each ancestor including the parent (like remove_entry_from_tree)
-        if size_diff != 0 {
-            let tree = self.tree.as_mut().unwrap();
-            tree.size = (tree.size as i64 + size_diff).max(0) as u64;
-
-            let mut parent = tree;
-            for &idx in &remapped_parent {
-                if idx >= parent.children.len() {
-                    break;
-                }
-                parent = &mut parent.children[idx];
-                parent.size = (parent.size as i64 + size_diff).max(0) as u64;
+            } else {
+                break;
             }
         }
+        self.nav_stack = remapped;
 
-        // Remap live nav_stack paths that still exist
-        let live_paths: Vec<PathBuf> = {
-            let mut paths = Vec::new();
-            let mut node = self.tree.as_ref().unwrap();
-            for &idx in &self.nav_stack {
-                if idx >= node.children.len() {
-                    break;
-                }
-                paths.push(node.children[idx].path.clone());
-                node = &node.children[idx];
+        let entries = self.get_display_entries();
+        if let Some(sel) = selected {
+            if let Some(idx) = entries.iter().position(|e| e.path == sel) {
+                self.selected_index = idx;
+            } else if !entries.is_empty() {
+                self.selected_index = self.selected_index.min(entries.len() - 1);
+            } else {
+                self.selected_index = 0;
             }
-            paths
+        } else if !entries.is_empty() {
+            self.selected_index = self.selected_index.min(entries.len() - 1);
+        }
+
+        let count = entries.len();
+        if count > 0 && self.scroll_offset >= count {
+            self.scroll_offset = count.saturating_sub(1);
+        }
+    }
+
+    fn apply_listed(&mut self, path: PathBuf, children: Vec<FileNode>) {
+        let selected = self.selected_entry_path();
+        let nav_paths = self.nav_path_stack();
+
+        if self.tree.is_none() {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.display().to_string());
+            let mut root = FileNode::new_dir(name, path);
+            root.children = children;
+            root.complete = false;
+            root.size = root.children.iter().map(|c| c.size).sum();
+            root.sort_children_by_size();
+            self.tree = Some(root);
+
+            #[cfg(feature = "splash")]
+            if let Some(ref mut splash) = self.splash_state {
+                splash.start_fadeout();
+            }
+            return;
+        }
+
+        if let Some(node) = find_node_mut(self.tree.as_mut().unwrap(), &path) {
+            node.children = children;
+            node.complete = false;
+            node.size = node.children.iter().map(|c| c.size).sum();
+            node.sort_children_by_size();
+        }
+
+        self.remap_navigation(&nav_paths, selected);
+    }
+
+    fn apply_sized(&mut self, path: PathBuf, size: u64, complete: bool) {
+        let selected = self.selected_entry_path();
+        let nav_paths = self.nav_path_stack();
+
+        let diff = {
+            let Some(tree) = self.tree.as_mut() else {
+                return;
+            };
+            let Some(node) = find_node_mut(tree, &path) else {
+                return;
+            };
+            let old_size = node.size;
+            node.size = size;
+            node.complete = complete;
+            size as i64 - old_size as i64
         };
-        if let Some(remapped) = remap_path_stack(self.tree.as_ref().unwrap(), &live_paths) {
-            self.nav_stack = remapped;
+
+        if diff != 0 {
+            if let Some(tree) = self.tree.as_mut() {
+                apply_delta_to_ancestors(tree, &path, diff);
+            }
+        }
+        if let Some(tree) = self.tree.as_mut() {
+            resort_along_path(tree, &path);
         }
 
-        // Keep compiler quiet about unused (debugging hooks)
-        let _ = (replaced_path, new_path);
+        self.remap_navigation(&nav_paths, selected);
     }
 
     /// Remove a deleted entry from the tree and update sizes up the tree
@@ -463,14 +497,15 @@ impl App {
         self.scan_rx = None;
 
         let path = self.root_path.clone();
-        let (tx, rx) = mpsc::channel();
+        // Bounded channel: scanner blocks when UI is behind instead of freezing the UI
+        let (tx, rx) = mpsc::sync_channel(128);
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_clone = cancel.clone();
 
         let handle = thread::spawn(move || {
             match scan_tree_cancellable(&path, Some(tx.clone()), Some(cancel_clone)) {
-                Ok(tree) => {
-                    let _ = tx.send(ScanProgress::Complete(tree));
+                Ok(_) => {
+                    // Complete already sent by scanner
                 }
                 Err(e) => {
                     if e != "scan cancelled" {
@@ -514,31 +549,41 @@ impl App {
             return;
         }
 
-        // Find the child index in the current node
-        let Some(current) = self.get_current_node() else {
-            return;
-        };
-        let Some(child_idx) = current.children.iter().position(|c| c.path == entry.path) else {
-            return;
-        };
+        let path = entry.path.clone();
 
-        // Store where to put the result
-        self.rescan_target = Some((self.nav_stack.clone(), child_idx));
+        // Clear target subtree so UI shows incomplete state while rescanning
+        let old_size = {
+            let tree = self.tree.as_mut().unwrap();
+            if let Some(node) = find_node_mut(tree, &path) {
+                let old = node.size;
+                node.children.clear();
+                node.size = 0;
+                node.complete = false;
+                Some(old)
+            } else {
+                None
+            }
+        };
+        if let Some(old_size) = old_size {
+            if old_size > 0 {
+                if let Some(tree) = self.tree.as_mut() {
+                    apply_delta_to_ancestors(tree, &path, -(old_size as i64));
+                }
+            }
+        }
 
-        // Start scan of just this subtree
+        self.rescan_target = Some(path.clone());
+
         if let Some(cancel) = self.scan_cancel.take() {
             cancel.store(true, Ordering::Relaxed);
         }
-        let path = entry.path.clone();
-        let (tx, rx) = mpsc::channel();
+        let (tx, rx) = mpsc::sync_channel(128);
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_clone = cancel.clone();
 
         let handle = thread::spawn(move || {
             match scan_tree_cancellable(&path, Some(tx.clone()), Some(cancel_clone)) {
-                Ok(tree) => {
-                    let _ = tx.send(ScanProgress::Complete(tree));
-                }
+                Ok(_) => {}
                 Err(e) => {
                     if e != "scan cancelled" {
                         let _ = tx.send(ScanProgress::Error(e));
@@ -555,52 +600,82 @@ impl App {
         self.scanning_path = None;
     }
 
-    pub fn update_scan_progress(&mut self) {
-        if let Some(rx) = self.scan_rx.as_ref() {
-            while let Ok(progress) = rx.try_recv() {
-                match progress {
-                    ScanProgress::Scanning {
-                        files_scanned,
-                        current_path,
-                    } => {
-                        self.scan_files_count = files_scanned;
-                        self.scanning_path = Some(current_path);
-                    }
-                    ScanProgress::Complete(new_tree) => {
-                        self.is_scanning = false;
-                        self.scan_thread = None;
-                        self.scan_rx = None;
-                        self.scanning_path = None;
+    /// Drain a bounded amount of scan progress so the UI stays interactive.
+    /// Returns true if state changed and a redraw is needed.
+    pub fn update_scan_progress(&mut self) -> bool {
+        // Take receiver to avoid holding borrow across &mut self helpers
+        let Some(rx) = self.scan_rx.take() else {
+            return false;
+        };
 
-                        // Check if this is a subtree rescan
-                        if let Some((nav_stack, child_idx)) = self.rescan_target.take() {
-                            self.replace_subtree(nav_stack, child_idx, new_tree);
-                            self.notification = Some("✓ Subtree rescanned".to_string());
-                            self.notification_time = Some(Instant::now());
-                        } else {
-                            // Full tree scan
-                            self.tree = Some(new_tree);
-                            // Start splash fadeout if active
-                            #[cfg(feature = "splash")]
-                            if let Some(ref mut splash) = self.splash_state {
-                                splash.start_fadeout();
-                            }
+        let mut keep_rx = true;
+        let mut changed = false;
+        let started = Instant::now();
+        let mut processed = 0usize;
+        const MAX_EVENTS: usize = 32;
+        const MAX_MS: u128 = 6;
+
+        while processed < MAX_EVENTS && started.elapsed().as_millis() < MAX_MS {
+            match rx.try_recv() {
+                Ok(progress) => {
+                    processed += 1;
+                    match progress {
+                        ScanProgress::Scanning {
+                            files_scanned,
+                            current_path,
+                        } => {
+                            self.scan_files_count = files_scanned;
+                            self.scanning_path = Some(current_path);
+                            changed = true;
                         }
+                        ScanProgress::Listed { path, children } => {
+                            self.apply_listed(path, children);
+                            changed = true;
+                        }
+                        ScanProgress::Sized {
+                            path,
+                            size,
+                            complete,
+                        } => {
+                            self.apply_sized(path, size, complete);
+                            changed = true;
+                        }
+                        ScanProgress::Complete => {
+                            self.is_scanning = false;
+                            self.scan_thread = None;
+                            self.scanning_path = None;
+                            keep_rx = false;
+                            changed = true;
 
-                        self.disk_space = platform::get_disk_space(&self.root_path);
-                        break;
-                    }
-                    ScanProgress::Error(e) => {
-                        self.is_scanning = false;
-                        self.scan_thread = None;
-                        self.scan_rx = None;
-                        self.notification = Some(format!("✗ Scan error: {}", e));
-                        self.notification_time = Some(Instant::now());
-                        break;
+                            if self.rescan_target.take().is_some() {
+                                self.notification = Some("✓ Subtree rescanned".to_string());
+                                self.notification_time = Some(Instant::now());
+                            }
+
+                            self.disk_space = platform::get_disk_space(&self.root_path);
+                            break;
+                        }
+                        ScanProgress::Error(e) => {
+                            self.is_scanning = false;
+                            self.scan_thread = None;
+                            self.scanning_path = None;
+                            self.rescan_target = None;
+                            keep_rx = false;
+                            changed = true;
+                            self.notification = Some(format!("✗ Scan error: {}", e));
+                            self.notification_time = Some(Instant::now());
+                            break;
+                        }
                     }
                 }
+                Err(_) => break,
             }
         }
+
+        if keep_rx {
+            self.scan_rx = Some(rx);
+        }
+        changed
     }
 
     pub fn open_delete_modal(&mut self) {
@@ -1380,6 +1455,50 @@ impl App {
     }
 }
 
+fn find_node_mut<'a>(node: &'a mut FileNode, path: &Path) -> Option<&'a mut FileNode> {
+    if node.path == path {
+        return Some(node);
+    }
+    for child in &mut node.children {
+        if path.starts_with(&child.path) {
+            if let Some(found) = find_node_mut(child, path) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// Apply size delta to strict ancestors of `path` (not `path` itself).
+fn apply_delta_to_ancestors(node: &mut FileNode, path: &Path, diff: i64) {
+    if node.path == path {
+        return;
+    }
+    node.size = (node.size as i64 + diff).max(0) as u64;
+    for child in &mut node.children {
+        if path.starts_with(&child.path) {
+            if child.path == path {
+                return;
+            }
+            apply_delta_to_ancestors(child, path, diff);
+            return;
+        }
+    }
+}
+
+fn resort_along_path(node: &mut FileNode, path: &Path) {
+    node.sort_children_by_size();
+    if node.path == path {
+        return;
+    }
+    for child in &mut node.children {
+        if path.starts_with(&child.path) {
+            resort_along_path(child, path);
+            return;
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum CleanupRow {
     Category {
@@ -1391,6 +1510,166 @@ pub enum CleanupRow {
         pattern: String,
         size: u64,
     },
+}
+
+#[cfg(test)]
+mod scan_merge_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use tempfile::tempdir;
+
+    fn app_with_rx(rx: mpsc::Receiver<ScanProgress>) -> App {
+        let mut app = App::create(PathBuf::from("/tmp"), false);
+        app.scan_rx = Some(rx);
+        app.is_scanning = true;
+        app
+    }
+
+    #[test]
+    fn listed_creates_tree_and_allows_enter() {
+        let (tx, rx) = mpsc::sync_channel(16);
+        let mut app = app_with_rx(rx);
+
+        let root = PathBuf::from("/tmp/scan-root");
+        let dir_a = root.join("a");
+        let file_b = root.join("b.txt");
+
+        tx.send(ScanProgress::Listed {
+            path: root.clone(),
+            children: vec![
+                FileNode::new_dir("a".into(), dir_a.clone()),
+                FileNode::new_file("b.txt".into(), file_b, 100),
+            ],
+        })
+        .unwrap();
+
+        app.update_scan_progress();
+
+        assert!(app.tree.is_some());
+        assert!(app.is_scanning);
+        assert_eq!(app.entries_count(), 2);
+
+        // Select directory "a" (largest-first: file 100 before empty dir 0, so index 1)
+        let entries = app.get_display_entries();
+        let a_idx = entries.iter().position(|e| e.name == "a").unwrap();
+        app.selected_index = a_idx;
+        app.enter_directory();
+        assert_eq!(app.nav_stack.len(), 1);
+        assert_eq!(app.get_current_path(), dir_a);
+    }
+
+    #[test]
+    fn sized_updates_live_and_marks_complete() {
+        let (tx, rx) = mpsc::sync_channel(16);
+        let mut app = app_with_rx(rx);
+
+        let root = PathBuf::from("/tmp/scan-root2");
+        let dir_a = root.join("a");
+
+        tx.send(ScanProgress::Listed {
+            path: root.clone(),
+            children: vec![FileNode::new_dir("a".into(), dir_a.clone())],
+        })
+        .unwrap();
+        app.update_scan_progress();
+
+        tx.send(ScanProgress::Sized {
+            path: dir_a.clone(),
+            size: 5000,
+            complete: true,
+        })
+        .unwrap();
+        app.update_scan_progress();
+
+        let tree = app.tree.as_ref().unwrap();
+        let child = tree.children.iter().find(|c| c.path == dir_a).unwrap();
+        assert_eq!(child.size, 5000);
+        assert!(child.complete);
+        // Parent picks up delta
+        assert_eq!(tree.size, 5000);
+
+        tx.send(ScanProgress::Complete).unwrap();
+        app.update_scan_progress();
+        assert!(!app.is_scanning);
+        assert!(app.scan_rx.is_none());
+    }
+
+    #[test]
+    fn nav_selection_survives_resort_on_size_update() {
+        let (tx, rx) = mpsc::sync_channel(16);
+        let mut app = app_with_rx(rx);
+
+        let root = PathBuf::from("/tmp/scan-root3");
+        let small = root.join("small");
+        let big = root.join("big");
+
+        tx.send(ScanProgress::Listed {
+            path: root.clone(),
+            children: vec![
+                FileNode::new_dir("small".into(), small.clone()),
+                FileNode::new_dir("big".into(), big.clone()),
+            ],
+        })
+        .unwrap();
+        app.update_scan_progress();
+
+        // Select "small"
+        let idx = app
+            .get_display_entries()
+            .iter()
+            .position(|e| e.name == "small")
+            .unwrap();
+        app.selected_index = idx;
+
+        // big becomes larger → sort moves it first; selection should stay on small
+        tx.send(ScanProgress::Sized {
+            path: big,
+            size: 10_000,
+            complete: true,
+        })
+        .unwrap();
+        app.update_scan_progress();
+
+        let selected = &app.get_display_entries()[app.selected_index];
+        assert_eq!(selected.name, "small");
+        assert_eq!(selected.path, small);
+    }
+
+    #[test]
+    fn incremental_scan_against_tempdir_merges_into_app() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir(root.join("d")).unwrap();
+        std::fs::write(root.join("d/f.txt"), "hello").unwrap();
+        std::fs::write(root.join("x.txt"), "x").unwrap();
+
+        let (tx, rx) = mpsc::sync_channel(128);
+        let root_canon = root.canonicalize().unwrap();
+        let handle = std::thread::spawn({
+            let root_canon = root_canon.clone();
+            move || {
+                scan_tree_cancellable(&root_canon, Some(tx), None).unwrap();
+            }
+        });
+
+        let mut app = App::create(root_canon.clone(), false);
+        app.scan_rx = Some(rx);
+        app.is_scanning = true;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.is_scanning && std::time::Instant::now() < deadline {
+            app.update_scan_progress();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        handle.join().unwrap();
+        app.update_scan_progress();
+
+        assert!(!app.is_scanning);
+        let tree = app.tree.as_ref().unwrap();
+        assert!(tree.complete);
+        assert_eq!(tree.path, root_canon);
+        assert!(tree.children.len() >= 2);
+    }
 }
 
 #[cfg(test)]

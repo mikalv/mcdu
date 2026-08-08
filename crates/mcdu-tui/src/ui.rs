@@ -11,25 +11,21 @@ use ratatui::{
 use tui_piechart::{PieChart, PieSlice};
 
 pub fn draw(f: &mut Frame, app: &mut App) {
-    // Splash screen takes over only during browser tree scans
+    // Splash only until the first directory listing; then drop it so navigation works
     #[cfg(feature = "splash")]
     {
         if app.mode != AppMode::Cleanup {
             if let Some(ref mut splash_state) = app.splash_state {
-                if app.is_scanning || !splash_state.is_done() {
-                    let done = crate::splash::draw_splash(
+                if app.tree.is_none() {
+                    let _ = crate::splash::draw_splash(
                         f,
                         splash_state,
                         app.scan_files_count,
                         app.scanning_path.as_deref(),
                     );
-                    if done {
-                        app.splash_state = None;
-                    }
                     return;
-                } else {
-                    app.splash_state = None;
                 }
+                app.splash_state = None;
             }
         }
     }
@@ -54,7 +50,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     // Help/status bar
-    draw_footer(f, chunks[2]);
+    draw_footer(f, app, chunks[2]);
 
     // Notification if present
     if let Some(notif) = &app.notification {
@@ -76,8 +72,8 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_cleanup_progress(f, progress);
     }
 
-    // Loading overlay if scanning (non-splash fallback, e.g. rescan)
-    if app.is_scanning {
+    // Fullscreen loading only when we have nothing to browse yet
+    if app.is_scanning && app.tree.is_none() {
         draw_loading(f, app.scan_files_count, app.scanning_path.as_deref());
     }
 
@@ -197,7 +193,12 @@ fn draw_browser(f: &mut Frame, app: &mut App, area: Rect) {
         .take(end_idx - start_idx)
     {
         let is_selected = idx == app.selected_index;
-        let size_str = format_size(entry.size);
+        let raw_size = format_size(entry.size);
+        let size_str = if entry.is_dir && !entry.complete && entry.name != ".." {
+            format!("~{}", raw_size)
+        } else {
+            raw_size
+        };
         let percent_bar = if entry.size > 0 && entry.name != ".." {
             create_bar(entry.size, max_size)
         } else {
@@ -222,7 +223,11 @@ fn draw_browser(f: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(Color::White)
         };
 
-        let size_style = Style::default().fg(size_color).add_modifier(Modifier::BOLD);
+        let size_style = if entry.is_dir && !entry.complete && entry.name != ".." {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(size_color).add_modifier(Modifier::BOLD)
+        };
 
         let line_spans = vec![
             Span::styled(
@@ -247,42 +252,79 @@ fn draw_browser(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn draw_footer(f: &mut Frame, area: Rect) {
+fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(33),
-            Constraint::Percentage(34),
-            Constraint::Percentage(33),
+            Constraint::Percentage(40),
+            Constraint::Percentage(35),
+            Constraint::Percentage(25),
         ])
         .split(area);
 
-    // Left: navigation hints
-    let nav_text = "[↑↓jk] Navigate  [Enter] Open  [h] Parent";
-    f.render_widget(
-        Paragraph::new(nav_text)
-            .style(Style::default().fg(Color::Gray))
-            .alignment(Alignment::Left),
-        chunks[0],
-    );
-
-    // Center: main actions
-    let main_text = "[d] Delete  [r] Rescan  [R] Rescan all  [?] Help  [C] Cleanup";
-    f.render_widget(
-        Paragraph::new(main_text)
-            .style(Style::default().fg(Color::Gray))
-            .alignment(Alignment::Center),
-        chunks[1],
-    );
-
-    // Right: quit
-    let quit_text = "[q/Esc] Quit";
-    f.render_widget(
-        Paragraph::new(quit_text)
-            .style(Style::default().fg(Color::Gray))
-            .alignment(Alignment::Right),
-        chunks[2],
-    );
+    match app.mode {
+        AppMode::Cleanup => {
+            f.render_widget(
+                Paragraph::new("[Tab] Tabs  [Space] Select  [d] Delete  [D] Dry-run")
+                    .style(Style::default().fg(Color::Gray))
+                    .alignment(Alignment::Left),
+                chunks[0],
+            );
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        "[q/Esc]",
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(" Back to browser", Style::default().fg(Color::Gray)),
+                ]))
+                .alignment(Alignment::Center),
+                chunks[1],
+            );
+            f.render_widget(
+                Paragraph::new("[?] Help")
+                    .style(Style::default().fg(Color::Gray))
+                    .alignment(Alignment::Right),
+                chunks[2],
+            );
+        }
+        _ => {
+            f.render_widget(
+                Paragraph::new("[↑↓] Navigate  [Enter] Open  [d] Delete  [?] Help")
+                    .style(Style::default().fg(Color::Gray))
+                    .alignment(Alignment::Left),
+                chunks[0],
+            );
+            // Make cleanup discoverable — highlighted call-to-action
+            f.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        "[C]",
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        " Cleanup mode",
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("  (Shift+C)", Style::default().fg(Color::DarkGray)),
+                ]))
+                .alignment(Alignment::Center),
+                chunks[1],
+            );
+            f.render_widget(
+                Paragraph::new("[q] Quit")
+                    .style(Style::default().fg(Color::Gray))
+                    .alignment(Alignment::Right),
+                chunks[2],
+            );
+        }
+    }
 }
 
 fn draw_modal(f: &mut Frame, modal: &Modal) {
@@ -1162,7 +1204,7 @@ pub fn draw_help(f: &mut Frame) {
                 .fg(Color::Magenta)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from("  C                   Enter cleanup scan"),
+        Line::from("  C (Shift+C)         Enter cleanup mode (developer cleanup)"),
         Line::from("  Tab / 1-4           Switch Overview/Categories/Files/Quarantine"),
         Line::from("  Space               Toggle selection"),
         Line::from("  a / n               Select all / none"),

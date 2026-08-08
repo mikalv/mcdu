@@ -149,30 +149,36 @@ where
             || app.notification_time.is_some();
         let poll_ms = if busy { 16 } else { 200 };
 
+        // Wait for input, then drain the whole key queue so navigation stays snappy
         if crossterm::event::poll(Duration::from_millis(poll_ms))? {
-            if let Event::Key(key) = event::read()? {
-                // Ignore key release/repeat (Windows + kitty keyboard protocol)
-                if key.kind != KeyEventKind::Press {
-                    continue;
+            let mut should_quit = false;
+            loop {
+                match event::read()? {
+                    Event::Key(key) if is_actionable_key(&key) => {
+                        if handle_input(&mut app, key)? {
+                            should_quit = true;
+                            break;
+                        }
+                        needs_redraw = true;
+                        last_activity = Instant::now();
+                    }
+                    _ => {}
                 }
-                if handle_input(&mut app, key)? {
+                if !crossterm::event::poll(Duration::ZERO)? {
                     break;
                 }
-                needs_redraw = true;
-                last_activity = Instant::now();
+            }
+            if should_quit {
+                break;
             }
         }
 
-        let before_scan = app.is_scanning;
-        let before_files = app.scan_files_count;
-        app.update_scan_progress();
+        if app.update_scan_progress() {
+            needs_redraw = true;
+        }
         app.update_delete_progress();
         app.update_cleanup_scan();
         app.update_cleanup_delete();
-
-        if app.is_scanning != before_scan || app.scan_files_count != before_files {
-            needs_redraw = true;
-        }
         if app.delete_progress.is_some() || app.cleanup_delete_progress.is_some() {
             needs_redraw = true;
         }
@@ -199,6 +205,29 @@ where
     }
 
     Ok(())
+}
+
+fn is_actionable_key(key: &KeyEvent) -> bool {
+    match key.kind {
+        KeyEventKind::Press => true,
+        // Allow held arrow/hjkl navigation (kitty/Windows emit Repeat)
+        KeyEventKind::Repeat => matches!(
+            key.code,
+            KeyCode::Up
+                | KeyCode::Down
+                | KeyCode::Left
+                | KeyCode::Right
+                | KeyCode::Char('j')
+                | KeyCode::Char('k')
+                | KeyCode::Char('h')
+                | KeyCode::Char('l')
+                | KeyCode::PageUp
+                | KeyCode::PageDown
+                | KeyCode::Home
+                | KeyCode::End
+        ),
+        KeyEventKind::Release => false,
+    }
 }
 
 fn handle_input(app: &mut App, key: KeyEvent) -> Result<bool, Box<dyn Error>> {
