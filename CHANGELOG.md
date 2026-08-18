@@ -5,13 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2025-08-18
 
 ### Added
 - **`mcdu devclean` (alias `mcdu dc`)** — fast non-interactive cleanup of build artifacts (`_build` profiles, `target/*` except `release`, age-gated `node_modules`/`deps`, `__pycache__`, `.venv`, `dist`, `build`, `.next`, `.turbo`, `.parcel-cache`, `cmake-build-*`) with dry-run (`-n`), `-y`, `--force-age`, and `--all` (drop release builds) flags; settings in `~/.mcdu.toml` `[devclean]` (`min_age_days`, `keep_release`, `age_gate_node_modules`, `extra_dirs`, `extra_age_gated`, `max_depth`, `skip_dirs`)
-
-### Added
 - **`cleanup_command` on rules** — when set, cleanup runs the shell command (with `{path}` / `{dir}` templates) instead of quarantine/delete
+- Fix pre-existing clippy warning (`manual_is_multiple_of` in tree.rs)
 
 ### Fixed
 - Browser single-file and symlink deletion (no more false success / half-deleted trees)
@@ -29,6 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 - Unused TUI modules `cache.rs`, `scan.rs`, `changes.rs`
+
+## [0.5.0]
+
+See the [v0.5.0 release notes](https://github.com/mikalv/mcdu/releases/tag/v0.5.0).
 
 ## [0.2.0] - 2025-01-10
 

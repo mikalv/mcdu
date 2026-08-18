@@ -992,7 +992,7 @@ dependencies = [
 
 [[package]]
 name = "mcdu"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "clap",
  "crossterm",
@@ -1006,7 +1006,7 @@ dependencies = [
 
 [[package]]
 name = "mcdu-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "dirs",
  "glob",
@@ -1025,7 +1025,7 @@ dependencies = [
 
 [[package]]
 name = "mcdu-macos"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "dirs",
  "mcdu-core",
@@ -1035,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "mcdu-tui"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "chrono",
  "crossterm",

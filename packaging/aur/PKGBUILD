@@ -1,6 +1,6 @@
 # Maintainer: Mikal Villa <spam@mux.rs>
 pkgname=mcdu
-pkgver=0.5.0
+pkgver=0.6.0
 pkgrel=1
 pkgdesc="Modern disk usage analyzer with TUI and developer cleanup tools"
 arch=('x86_64' 'aarch64')
@@ -9,7 +9,7 @@ license=('MIT')
 depends=('gcc-libs')
 makedepends=('rust' 'cargo')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/mikalv/$pkgname/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('d6c9ccdee5840ab23191a733f7575449760cfcc668d94961e641c1c042796e92')
+sha256sums=('d5558cd419c8d46bdc958064cb97f963d1ea793866414c025906ec15033512ed')
 
 build() {
     cd "$pkgname-$pkgver"

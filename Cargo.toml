@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/mcdu-core", "crates/mcdu-macos", "crates/mcdu-tui", "crates/mcdu"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 authors = ["Mikal Villa <mikalv@hey.com>"]
 license = "MIT"
@@ -14,9 +14,9 @@ categories = ["command-line-utilities", "filesystem"]
 
 [workspace.dependencies]
 # Internal crates
-mcdu-core = { version = "0.5.0", path = "crates/mcdu-core" }
-mcdu-macos = { version = "0.5.0", path = "crates/mcdu-macos" }
-mcdu-tui = { version = "0.5.0", path = "crates/mcdu-tui" }
+mcdu-core = { version = "0.6.0", path = "crates/mcdu-core" }
+mcdu-macos = { version = "0.6.0", path = "crates/mcdu-macos" }
+mcdu-tui = { version = "0.6.0", path = "crates/mcdu-tui" }
 
 # Core dependencies (mcdu-core)
 walkdir = "2"

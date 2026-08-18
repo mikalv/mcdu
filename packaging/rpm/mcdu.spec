@@ -1,5 +1,5 @@
 Name:           mcdu
-Version:        0.5.0
+Version:        0.6.0
 Release:        1%{?dist}
 Summary:        Modern disk usage analyzer with TUI and developer cleanup tools
 

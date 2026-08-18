@@ -1,3 +1,9 @@
+mcdu (0.6.0-1) unstable; urgency=medium
+
+  * Release 0.6.0
+
+ -- Mikal Villa <m@meeh.dev>  Tue, 18 Aug 2026 14:13:31 +0200
+
 mcdu (0.5.0-1) unstable; urgency=medium
 
   * Developer cleanup mode with 18+ ecosystem support
