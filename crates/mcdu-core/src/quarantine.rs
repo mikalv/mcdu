@@ -135,7 +135,11 @@ impl Quarantine {
         self.settings.skip_categories.iter().any(|c| c == category)
     }
 
-    fn write_manifest(&self, batch_dir: &Path, manifest: &QuarantineManifest) -> Result<(), QuarantineError> {
+    fn write_manifest(
+        &self,
+        batch_dir: &Path,
+        manifest: &QuarantineManifest,
+    ) -> Result<(), QuarantineError> {
         let manifest_path = batch_dir.join("manifest.json");
         let tmp_path = batch_dir.join("manifest.json.tmp");
         let manifest_json = serde_json::to_string_pretty(manifest)?;
@@ -644,7 +648,10 @@ mod tests {
 
         quarantine.restore(&manifest.id).unwrap();
         assert!(path_exists_nofollow(&link));
-        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[test]

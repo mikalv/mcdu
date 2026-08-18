@@ -116,6 +116,37 @@ Scans for build artifacts, caches, and other reclaimable disk space across your 
 
 **Default scan paths:** `~/Downloads`, `~/Projects`, `~/Code`, `~/Developer`, `~/repos`, `~/dev`, `~/src`, `~/workspace`
 
+### Quick Dev Clean (non-interactive)
+
+```bash
+mcdu dc ~/Repos        # or: mcdu devclean ~/Repos
+mcdu dc -n ~/Repos     # dry run: list what would be removed
+mcdu dc -y ~/Repos     # no confirmation prompt
+mcdu dc --all ~/Repos  # also remove release builds (target/release, _build/prod)
+mcdu dc --force-age ~/Repos  # ignore the node_modules age gate
+```
+
+A fast, non-interactive sweep that removes build artifacts under a path
+(default: current directory):
+
+- `_build/dev`, `_build/test` — keeps `_build/prod` unless `--all`
+- `target/*` except `target/release` — unless `--all`
+- `node_modules`, `deps`, `.elixir_ls` older than `min_age_days` (default 2)
+- `__pycache__`, `.venv`/`venv`, `dist`, `build`, `.next`, `.turbo`, `.parcel-cache`, `cmake-build-*`
+
+Settings live in `~/.mcdu.toml`:
+
+```toml
+[devclean]
+min_age_days = 2          # age gate for node_modules, deps, .elixir_ls
+keep_release = true       # keep target/release and _build/prod
+age_gate_node_modules = true  # set false to ignore the age gate
+extra_dirs = []           # extra dir names to always remove
+extra_age_gated = []      # extra dir names to remove when old enough
+# max_depth = 6
+# skip_dirs = [".git", ".jj", ".cache", "Library"]
+```
+
 ### Orphaned App Data (macOS)
 
 ```bash

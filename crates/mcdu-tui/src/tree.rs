@@ -244,7 +244,7 @@ fn scan_dir_recursive(
         let name = entry.file_name().to_string_lossy().to_string();
         *files_scanned += 1;
 
-        if *files_scanned % 1000 == 0 {
+        if (*files_scanned).is_multiple_of(1000) {
             send_progress(
                 progress_tx,
                 ScanProgress::Scanning {
@@ -412,7 +412,9 @@ mod tests {
             match rx.recv_timeout(Duration::from_millis(50)) {
                 Ok(msg) => {
                     match &msg {
-                        ScanProgress::Listed { path, children } if path == &root.canonicalize().unwrap() => {
+                        ScanProgress::Listed { path, children }
+                            if path == &root.canonicalize().unwrap() =>
+                        {
                             saw_root_listed = true;
                             // Deep nested file must not be a direct child; listing is shallow
                             assert!(children.iter().any(|c| c.name == "deep"));
@@ -448,7 +450,9 @@ mod tests {
         let root_listed_pos = events.iter().position(|e| {
             matches!(e, ScanProgress::Listed { path, .. } if path == &root.canonicalize().unwrap())
         });
-        let complete_pos = events.iter().position(|e| matches!(e, ScanProgress::Complete));
+        let complete_pos = events
+            .iter()
+            .position(|e| matches!(e, ScanProgress::Complete));
         assert!(root_listed_pos.unwrap() < complete_pos.unwrap());
     }
 
@@ -493,9 +497,7 @@ mod tests {
         assert!(tree.size > 0);
 
         let a_path = root_canon.join("a");
-        assert!(sized_events
-            .iter()
-            .any(|(p, _, c)| p == &a_path && *c));
+        assert!(sized_events.iter().any(|(p, _, c)| p == &a_path && *c));
 
         let root_complete = sized_events
             .iter()

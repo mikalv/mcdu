@@ -8,6 +8,7 @@
 //! - Platform-specific path resolution
 
 pub mod config;
+pub mod devclean;
 pub mod executor;
 pub mod git;
 pub mod parallel;
@@ -18,6 +19,10 @@ pub mod scanner;
 
 // Re-exports for convenience
 pub use config::{CleanupConfig, CleanupState};
+pub use devclean::{
+    devclean, load_settings as load_devclean_settings, DevcleanError, DevcleanItem, DevcleanResult,
+    DevcleanSettings,
+};
 pub use executor::{CleanupProgress, CleanupResult};
 pub use parallel::{parallel_scan, ParallelScanConfig, ParallelScanner};
 pub use platform::PlatformPaths;

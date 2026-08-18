@@ -741,7 +741,11 @@ fn draw_cleanup_categories(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or(0);
     let start_line = cursor_line.saturating_sub(viewport_height / 2);
     let end_line = (start_line + viewport_height).min(all_lines.len());
-    for (_, line) in all_lines.into_iter().skip(start_line).take(end_line - start_line) {
+    for (_, line) in all_lines
+        .into_iter()
+        .skip(start_line)
+        .take(end_line - start_line)
+    {
         lines.push(line);
     }
 

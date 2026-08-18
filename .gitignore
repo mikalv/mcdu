@@ -28,3 +28,6 @@ Thumbs.db
 
 # Test outputs
 test-output/
+
+# Local agent/assistant files
+.pi/

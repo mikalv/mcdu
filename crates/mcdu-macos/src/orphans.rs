@@ -77,8 +77,7 @@ pub fn scan_orphans(
             };
 
             // Skip system / whitelisted bundles
-            if bundle::is_system_bundle(&bundle_id)
-                || installed::is_whitelisted_prefix(&bundle_id)
+            if bundle::is_system_bundle(&bundle_id) || installed::is_whitelisted_prefix(&bundle_id)
             {
                 continue;
             }

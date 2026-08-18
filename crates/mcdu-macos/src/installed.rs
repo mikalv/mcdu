@@ -58,7 +58,14 @@ fn read_bundle_id(app_path: &str) -> Option<String> {
 
     // Prefer plutil extract (no process-per-defaults overhead of parsing whole plist via defaults)
     if let Ok(output) = Command::new("plutil")
-        .args(["-extract", "CFBundleIdentifier", "raw", "-o", "-", &plist_path])
+        .args([
+            "-extract",
+            "CFBundleIdentifier",
+            "raw",
+            "-o",
+            "-",
+            &plist_path,
+        ])
         .output()
     {
         if output.status.success() {

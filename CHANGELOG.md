@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`mcdu devclean` (alias `mcdu dc`)** — fast non-interactive cleanup of build artifacts (`_build` profiles, `target/*` except `release`, age-gated `node_modules`/`deps`, `__pycache__`, `.venv`, `dist`, `build`, `.next`, `.turbo`, `.parcel-cache`, `cmake-build-*`) with dry-run (`-n`), `-y`, `--force-age`, and `--all` (drop release builds) flags; settings in `~/.mcdu.toml` `[devclean]` (`min_age_days`, `keep_release`, `age_gate_node_modules`, `extra_dirs`, `extra_age_gated`, `max_depth`, `skip_dirs`)
+
+### Added
 - **`cleanup_command` on rules** — when set, cleanup runs the shell command (with `{path}` / `{dir}` templates) instead of quarantine/delete
 
 ### Fixed

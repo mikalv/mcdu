@@ -754,9 +754,8 @@ impl App {
 
         let (tx, rx) = mpsc::channel();
         let home = platform_paths.home_dir.clone();
-        let handle = thread::spawn(move || {
-            mcdu_macos::scan_orphans(&home, Some(&tx)).unwrap_or_default()
-        });
+        let handle =
+            thread::spawn(move || mcdu_macos::scan_orphans(&home, Some(&tx)).unwrap_or_default());
 
         self.cleanup_scan_thread = Some(handle);
         self.cleanup_scan_rx = Some(rx);
@@ -972,7 +971,11 @@ impl App {
     }
 
     pub fn toggle_files_selection(&mut self) {
-        let mut paths: Vec<_> = self.cleanup_candidates.iter().map(|c| c.path.clone()).collect();
+        let mut paths: Vec<_> = self
+            .cleanup_candidates
+            .iter()
+            .map(|c| c.path.clone())
+            .collect();
         // Keep sorted view aligned with UI — use same order as draw_cleanup_files would
         paths.sort();
         // Prefer index into cleanup_candidates after applying current sort in UI;
@@ -1160,8 +1163,7 @@ impl App {
                     Err(_) => {
                         self.cleanup_delete_progress = None;
                         self.cleanup_delete_rx = None;
-                        self.notification =
-                            Some("Cleanup delete thread panicked".to_string());
+                        self.notification = Some("Cleanup delete thread panicked".to_string());
                         self.notification_time = Some(Instant::now());
                         self.mode = AppMode::Cleanup;
                     }
@@ -1776,12 +1778,11 @@ risky = false
 
         app.start_cleanup_delete();
         assert!(app.modal.is_none());
-        assert!(
-            app.notification
-                .as_deref()
-                .unwrap_or("")
-                .contains("No cleanup items selected")
-        );
+        assert!(app
+            .notification
+            .as_deref()
+            .unwrap_or("")
+            .contains("No cleanup items selected"));
         assert!(cache_file.exists());
     }
 }

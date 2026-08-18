@@ -162,8 +162,7 @@ impl Modal {
             }
             ModalType::CleanupFinal { has_risky, .. } => {
                 if *has_risky {
-                    "Selection includes RISKY items. git gc is opt-in (YES + git gc)."
-                        .to_string()
+                    "Selection includes RISKY items. git gc is opt-in (YES + git gc).".to_string()
                 } else {
                     "Really delete selected cleanup items? git gc is opt-in (YES + git gc)."
                         .to_string()

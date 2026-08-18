@@ -70,9 +70,7 @@ pub fn execute(
             )]) {
                 Ok(_) => Ok(()),
                 Err(QuarantineError::PartialFailure {
-                    succeeded,
-                    message,
-                    ..
+                    succeeded, message, ..
                 }) => {
                     if succeeded >= 1 {
                         Ok(())
@@ -145,14 +143,8 @@ pub fn dry_run(candidates: Vec<Candidate>) -> CleanupResult {
 /// - `{dir}` — directory to operate in (the path if it's a dir, else its parent)
 ///
 /// Working directory is set to `{dir}`.
-pub fn run_cleanup_command(
-    template: &str,
-    path: &Path,
-    is_directory: bool,
-) -> std::io::Result<()> {
-    let abs = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+pub fn run_cleanup_command(template: &str, path: &Path, is_directory: bool) -> std::io::Result<()> {
+    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let dir = if is_directory || abs.is_dir() {
         abs.clone()
     } else {
@@ -238,11 +230,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let result = execute(candidates, false, Vec::new(), Some(tx));
 
-        assert!(
-            result.errors.is_empty(),
-            "errors: {:?}",
-            result.errors
-        );
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         assert!(!file_a.exists());
         assert!(!file_b.exists());
         assert_eq!(result.freed_bytes, 13);

@@ -2,10 +2,9 @@ use clap::{Parser, Subcommand};
 use crossterm::{
     event::{self, Event, KeyCode, KeyEvent, KeyEventKind},
     execute,
-    terminal::{
-        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-    },
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use mcdu_core::devclean::{devclean, load_settings as load_devclean_settings};
 use mcdu_tui::{app::App, app::AppMode, modal, ui};
 use ratatui::prelude::*;
 use ratatui::Terminal;
@@ -29,6 +28,9 @@ struct Cli {
 enum Commands {
     /// Developer cleanup utilities
     Cleanup(CleanupCommand),
+    /// Quick non-interactive cleanup of build artifacts (alias: dc)
+    #[command(alias = "dc")]
+    Devclean(DevcleanCommand),
     /// Detect orphaned macOS app data (macOS only)
     Orphans(OrphansCommand),
 }
@@ -43,6 +45,25 @@ pub struct CleanupCommand {
 #[derive(Parser)]
 pub struct OrphansCommand {}
 
+#[derive(Parser)]
+pub struct DevcleanCommand {
+    /// Path to clean (default: current directory)
+    #[arg(value_name = "PATH")]
+    path: Option<PathBuf>,
+    /// List what would be removed, then exit (no deletion)
+    #[arg(short = 'n', long)]
+    dry_run: bool,
+    /// Delete without the confirmation prompt
+    #[arg(short = 'y', long)]
+    yes: bool,
+    /// Remove age-gated dirs (node_modules, deps, ...) regardless of age
+    #[arg(long)]
+    force_age: bool,
+    /// Also remove release builds (target/release, _build/prod)
+    #[arg(long)]
+    all: bool,
+}
+
 fn restore_terminal() {
     let _ = disable_raw_mode();
     let mut stdout = io::stdout();
@@ -52,6 +73,12 @@ fn restore_terminal() {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
+
+    // Non-interactive subcommand: no TUI involved
+    if let Some(Commands::Devclean(cmd)) = &cli.command {
+        run_devclean(cmd)?;
+        return Ok(());
+    }
 
     let orphan_mode = matches!(cli.command, Some(Commands::Orphans(_)));
     let (cleanup_mode, start_path) = match cli.command {
@@ -109,6 +136,96 @@ fn main() -> Result<(), Box<dyn Error>> {
         eprintln!("Error: {}", e);
     }
 
+    Ok(())
+}
+
+fn fmt_bytes(bytes: u64) -> String {
+    const MB: u64 = 1024 * 1024;
+    const GB: u64 = MB * 1024;
+    if bytes >= GB {
+        format!("{:.1} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    }
+}
+
+fn run_devclean(cmd: &DevcleanCommand) -> Result<(), Box<dyn Error>> {
+    let root = cmd
+        .path
+        .clone()
+        .map(|p| -> Result<PathBuf, Box<dyn Error>> {
+            if !p.exists() {
+                return Err(format!("Path does not exist: {}", p.display()).into());
+            }
+            if !p.is_dir() {
+                return Err(format!("Path is not a directory: {}", p.display()).into());
+            }
+            Ok(p)
+        })
+        .transpose()?
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+
+    let mut settings = load_devclean_settings().map_err(|e| format!("{e}"))?;
+    if cmd.force_age {
+        settings.age_gate_node_modules = false;
+    }
+    if cmd.all {
+        settings.keep_release = false;
+    }
+
+    let result = devclean(&root, &settings, true).map_err(|e| format!("{e}"))?;
+
+    if result.removed.is_empty() {
+        println!("Nothing to clean under {}", root.display());
+        return Ok(());
+    }
+
+    for item in &result.removed {
+        println!(
+            "  {:>10}  {}",
+            fmt_bytes(item.size_bytes),
+            item.path.display()
+        );
+    }
+    println!(
+        "\n{} item(s), {} would be freed",
+        result.removed.len(),
+        fmt_bytes(result.freed_bytes)
+    );
+    for item in &result.kept {
+        println!("  kept: {} ({})", item.path.display(), item.reason);
+    }
+
+    if cmd.dry_run {
+        return Ok(());
+    }
+
+    if !cmd.yes {
+        print!("\nDelete these directories? [y/N] ");
+        std::io::stdout().flush()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input)?;
+        let input = input.trim().to_lowercase();
+        if input != "y" && input != "yes" {
+            println!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    let result = devclean(&root, &settings, false).map_err(|e| format!("{e}"))?;
+    for (path, err) in &result.errors {
+        eprintln!("error: {}: {}", path.display(), err);
+    }
+    println!(
+        "Removed {} item(s), freed {}",
+        result.removed.len(),
+        fmt_bytes(result.freed_bytes)
+    );
+    if !result.errors.is_empty() {
+        std::process::exit(1);
+    }
     Ok(())
 }
 
