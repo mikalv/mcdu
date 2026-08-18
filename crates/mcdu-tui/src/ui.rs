@@ -1065,7 +1065,7 @@ pub fn truncate_chars(s: &str, max_chars: usize) -> String {
 }
 
 /// Truncate from the start, keeping the end of a path (char-safe).
-fn truncate_path_end(path: &str, max_width: usize) -> String {
+pub(crate) fn truncate_path_end(path: &str, max_width: usize) -> String {
     if max_width <= 3 {
         return "...".chars().take(max_width).collect();
     }
@@ -1220,4 +1220,41 @@ pub fn draw_help(f: &mut Frame) {
         .alignment(Alignment::Left);
 
     f.render_widget(help_widget, centered);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_path_end_keeps_short_path() {
+        assert_eq!(truncate_path_end("/tmp/a", 30), "/tmp/a");
+    }
+
+    #[test]
+    fn truncate_path_end_truncates_long_ascii_path() {
+        let path = "/Users/user/Downloads/sketchup/very-long-directory-name/model.skp";
+        let out = truncate_path_end(path, 28);
+        assert_eq!(out.chars().count(), 28);
+        assert!(out.starts_with("..."));
+        assert!(out.ends_with("model.skp"));
+    }
+
+    #[test]
+    fn truncate_path_end_is_multibyte_safe() {
+        // Regression test for issue #24: byte-index slicing of the scanning
+        // path panicked ("byte index ... is not a char boundary") when the
+        // cut landed inside a multi-byte Cyrillic character.
+        let path = "/Users/user/Downloads/sketchup/Условные+обозначения.skp";
+        let out = truncate_path_end(path, 28);
+        assert_eq!(out.chars().count(), 28);
+        assert!(out.starts_with("..."));
+        assert!(out.ends_with(".skp"));
+    }
+
+    #[test]
+    fn truncate_path_end_handles_tiny_width() {
+        assert_eq!(truncate_path_end("/tmp/a", 3), "...");
+        assert_eq!(truncate_path_end("/tmp/a", 0), "");
+    }
 }

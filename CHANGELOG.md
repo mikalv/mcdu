@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Browser single-file and symlink deletion (no more false success / half-deleted trees)
+- Splash screen no longer panics on multi-byte (e.g. Cyrillic) scanning paths — truncation now goes through the char-safe `truncate_path_end` (#24)
 - Cleanup empty selection no longer deletes everything
 - Cleanup deletes go through quarantine with incremental manifests; Quarantine tab restore/purge works
 - `git gc` is opt-in (`YES + git gc`), without `--prune=now`, errors reported
