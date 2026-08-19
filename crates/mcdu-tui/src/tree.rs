@@ -528,8 +528,9 @@ mod tests {
         // completion regardless of scheduling speed. (Instrumented/tarpaulin
         // runs are too slow to reliably race a mid-walk cancel.)
         cancel.store(true, Ordering::Relaxed);
-        let handle =
-            std::thread::spawn(move || scan_tree_cancellable(&root_canon, Some(tx), Some(cancel_clone)));
+        let handle = std::thread::spawn(move || {
+            scan_tree_cancellable(&root_canon, Some(tx), Some(cancel_clone))
+        });
 
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut saw_complete = false;
