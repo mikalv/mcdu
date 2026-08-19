@@ -524,14 +524,12 @@ mod tests {
         let cancel_clone = cancel.clone();
         let root_canon = root.canonicalize().unwrap();
 
-        let handle = std::thread::spawn(move || {
-            scan_tree_cancellable(&root_canon, Some(tx), Some(cancel_clone))
-        });
-
-        // Wait for first progress, then cancel. Keep draining so bounded
-        // send() unblocks and the worker can observe the cancel flag.
-        let _ = rx.recv_timeout(Duration::from_secs(2));
+        // Cancel before the worker starts: the scan must abort before
+        // completion regardless of scheduling speed. (Instrumented/tarpaulin
+        // runs are too slow to reliably race a mid-walk cancel.)
         cancel.store(true, Ordering::Relaxed);
+        let handle =
+            std::thread::spawn(move || scan_tree_cancellable(&root_canon, Some(tx), Some(cancel_clone)));
 
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut saw_complete = false;
