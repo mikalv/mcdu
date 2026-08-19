@@ -136,7 +136,7 @@ pub fn scan_orphans(
     }
 
     // Sort by size descending so the biggest orphans appear first
-    results.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+    results.sort_by_key(|r| std::cmp::Reverse(r.size_bytes));
     Ok(results)
 }
 
@@ -347,7 +347,7 @@ mod tests {
             }
         }
 
-        results.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+        results.sort_by_key(|r| std::cmp::Reverse(r.size_bytes));
         results
     }
 }

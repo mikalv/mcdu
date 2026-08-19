@@ -1013,7 +1013,7 @@ impl App {
         let mut all: Vec<_> = self.cleanup_candidates.iter().collect();
         match self.cleanup_files_sort {
             crate::cleanup_ui::FilesSortColumn::Size => {
-                all.sort_by(|a, b| b.size_bytes.cmp(&a.size_bytes));
+                all.sort_by_key(|c| std::cmp::Reverse(c.size_bytes));
             }
             crate::cleanup_ui::FilesSortColumn::Name => {
                 all.sort_by(|a, b| a.path.cmp(&b.path));
@@ -1022,7 +1022,7 @@ impl App {
                 all.sort_by(|a, b| a.rule_category.cmp(&b.rule_category));
             }
             crate::cleanup_ui::FilesSortColumn::Age => {
-                all.sort_by(|a, b| b.last_accessed.cmp(&a.last_accessed));
+                all.sort_by_key(|c| std::cmp::Reverse(c.last_accessed));
             }
         }
         if !self.cleanup_files_sort_desc

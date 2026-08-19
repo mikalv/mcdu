@@ -765,7 +765,7 @@ fn draw_cleanup_files(f: &mut Frame, app: &App, area: Rect) {
 
     match app.cleanup_files_sort {
         crate::cleanup_ui::FilesSortColumn::Size => {
-            all_candidates.sort_by(|a, b| b.1.size_bytes.cmp(&a.1.size_bytes));
+            all_candidates.sort_by_key(|c| std::cmp::Reverse(c.1.size_bytes));
         }
         crate::cleanup_ui::FilesSortColumn::Name => {
             all_candidates.sort_by(|a, b| a.1.path.cmp(&b.1.path));
@@ -774,7 +774,7 @@ fn draw_cleanup_files(f: &mut Frame, app: &App, area: Rect) {
             all_candidates.sort_by(|a, b| a.0.cmp(b.0));
         }
         crate::cleanup_ui::FilesSortColumn::Age => {
-            all_candidates.sort_by(|a, b| a.1.last_accessed.cmp(&b.1.last_accessed));
+            all_candidates.sort_by_key(|c| std::cmp::Reverse(c.1.last_accessed));
         }
     }
 

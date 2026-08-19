@@ -194,7 +194,7 @@ impl Quarantine {
         }
 
         // Sort by timestamp, newest first
-        manifests.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        manifests.sort_by_key(|m| std::cmp::Reverse(m.timestamp));
 
         Ok(manifests)
     }
