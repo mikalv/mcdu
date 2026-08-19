@@ -146,8 +146,20 @@ jobs:
           chmod +x mcdu
 
       - name: Install nfpm
+        env:
+          NFPM_ARCH: ${{ matrix.nfpm_arch }}
         run: |
-          curl -sfL https://github.com/goreleaser/nfpm/releases/latest/download/nfpm_linux_amd64.tar.gz | tar xz -C /usr/local/bin nfpm
+          # nfpm v2.47 renamed release assets: nfpm_<ver>_Linux_<arch>.tar.gz
+          # (arch = x86_64/arm64, NOT linux_amd64). Pin a known-good version
+          # so a future rename cannot silently break releases; -f makes
+          # curl fail loudly on 404 instead of feeding tar an empty stream.
+          case "${NFPM_ARCH}" in
+            amd64) NFPM_GOARCH=x86_64 ;;
+            arm64) NFPM_GOARCH=arm64 ;;
+          esac
+          curl --fail --location --retry 3 --retry-delay 2 \
+            "https://github.com/goreleaser/nfpm/releases/download/v2.41.2/nfpm_2.41.2_Linux_${NFPM_GOARCH}.tar.gz" \
+            | tar xz -C /usr/local/bin nfpm
 
       - name: Build DEB package
         env:
