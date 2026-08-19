@@ -191,6 +191,7 @@ jobs:
             -H "Authorization: Bearer ${PKG42_TOKEN}" \
             -H "Content-Type: application/octet-stream" \
             --data-binary "@${DEB_FILE}" \
+            --globoff \
             "https://pkg42.dev/deb/stable/main/${NFPM_ARCH}/upload?file=${DEB_NAME}&meta[Package]=mcdu&meta[Version]=${VERSION}"
 
       - name: Upload RPM to pkg42
