@@ -715,6 +715,7 @@ impl App {
         let config_clone = config.clone();
         let platform_clone = platform_paths.clone();
         let handle = thread::spawn(move || {
+            #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
             let mut results = cleanup::scanner::scan(
                 &config_clone,
                 &platform_clone,
