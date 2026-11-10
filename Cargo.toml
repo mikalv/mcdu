@@ -37,7 +37,7 @@ tachyonfx = "0.25"
 tui-big-text = "0.8"
 
 # CLI dependencies (mcdu)
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.6", features = ["derive"] }
 
 # Dev dependencies
 tempfile = "3"
