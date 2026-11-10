@@ -156,18 +156,14 @@ pub fn draw_splash(
 
     // --- Render live progress (no effects, always readable) ---
     let file_count_text = format!("  Scanning... {:>7} files", files_scanned);
+    let max_width = progress_area.width.saturating_sub(4) as usize;
     let path_text = match scanning_path {
-        Some(path) => {
-            let max_width = progress_area.width.saturating_sub(4) as usize;
-            if path.len() > max_width {
-                format!(
-                    "  ...{}",
-                    &path[path.len().saturating_sub(max_width.saturating_sub(5))..],
-                )
-            } else {
-                format!("  {}", path)
-            }
-        }
+        // Char-safe truncation via `truncate_path_end`; the two-space indent
+        // shrinks the path budget so the whole line fits `max_width`.
+        Some(path) => format!(
+            "  {}",
+            crate::ui::truncate_path_end(path, max_width.saturating_sub(2))
+        ),
         None => "  Initializing...".to_string(),
     };
 
