@@ -1783,7 +1783,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.1",
  "once_cell",
  "rustix",
  "windows-sys",
@@ -1965,12 +1965,22 @@ dependencies = [
 ]
 
 [[package]]
-name = "tui-piechart"
-version = "0.2.9"
+name = "tui-nuances"
+version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c101137b785df23428a47e8335c43dba647797bba0ef235e2fabeea69c4be1d"
+checksum = "71a55e1ee7052a2409c91486005043da038bf44f72978a69747986dc64ca6068"
 dependencies = [
  "ratatui",
+]
+
+[[package]]
+name = "tui-piechart"
+version = "1.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d65272d25bb3799d827de6d07f7c4885eb40761693ea0db6eafe051fa63457ac"
+dependencies = [
+ "ratatui",
+ "tui-nuances",
 ]
 
 [[package]]
